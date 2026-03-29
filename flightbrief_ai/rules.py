@@ -93,38 +93,30 @@ def _time_overlap_minutes(a_start: int, a_end: int, b_start: int, b_end: int) ->
 def _align_window_to_flight(start: int, end: int, flight_start: int, flight_end: int) -> tuple[int, int]:
     if end < start:
         end += 24 * 60
-
-    # roll forecast interval forward if needed
     if start < flight_start - 12 * 60:
         start += 24 * 60
         end += 24 * 60
-
     return start, end
 
 
 def _parse_taf_group_window(line: str) -> tuple[int | None, int | None]:
-    # PROB40 TEMPO 0806/0811
     m = re.search(r"\bPROB\d{2}\s+TEMPO\s+(\d{4})/(\d{4})\b", line)
     if m:
         return _hhmm_to_minutes(m.group(1)[-4:]), _hhmm_to_minutes(m.group(2)[-4:])
 
-    # TEMPO 0718/0720
     m = re.search(r"\bTEMPO\s+(\d{4})/(\d{4})\b", line)
     if m:
         return _hhmm_to_minutes(m.group(1)[-4:]), _hhmm_to_minutes(m.group(2)[-4:])
 
-    # BECMG 0808/0810
     m = re.search(r"\bBECMG\s+(\d{4})/(\d{4})\b", line)
     if m:
         return _hhmm_to_minutes(m.group(1)[-4:]), _hhmm_to_minutes(m.group(2)[-4:])
 
-    # FM080600
     m = re.search(r"\bFM(\d{6})\b", line)
     if m:
         start = _hhmm_to_minutes(m.group(1)[-4:])
-        return start, start + 360  # assume persistence over next ~6h
+        return start, start + 360
 
-    # FT 071700 0718/0824
     m = re.search(r"\bFT\s+\d{6}\s+(\d{4})/(\d{4})\b", line)
     if m:
         return _hhmm_to_minutes(m.group(1)[-4:]), _hhmm_to_minutes(m.group(2)[-4:])
@@ -142,7 +134,7 @@ def _line_has_weather_threat(line: str) -> bool:
     )
 
 
-def _classify_weather_line(line: str, airport: str) -> tuple[str, str, str, str]:
+def _classify_weather_line(line: str, airport: str) -> tuple[str, str, str, str, str]:
     lower = line.lower()
 
     if "ws020" in lower or "windshear" in lower:
@@ -150,6 +142,7 @@ def _classify_weather_line(line: str, airport: str) -> tuple[str, str, str, str]
             "P2",
             "MET",
             "Windshear / low-level windshear",
+            f"Windshear em {airport} dentro da janela operacional do voo aumenta workload e deve entrar no briefing.",
             "Reforçar briefing de departure/arrival e awareness para windshear recovery.",
         )
 
@@ -158,6 +151,7 @@ def _classify_weather_line(line: str, airport: str) -> tuple[str, str, str, str]
             "P2",
             "MET",
             "Convective activity / thunderstorms",
+            f"Atividade convectiva prevista em {airport} dentro da janela operacional do voo aumenta workload, desvios táticos e risco de turbulência/precipitação forte.",
             "Briefar weather avoidance e monitorização radar/ATC.",
         )
 
@@ -166,6 +160,7 @@ def _classify_weather_line(line: str, airport: str) -> tuple[str, str, str, str]
             "P2",
             "MET",
             "Strong gusty wind",
+            f"Rajadas fortes previstas em {airport} dentro da janela operacional do voo podem afetar a fase de aproximação/aterragem ou descolagem.",
             "Confirmar runway expectation e estratégia para vento rajado.",
         )
 
@@ -174,6 +169,7 @@ def _classify_weather_line(line: str, airport: str) -> tuple[str, str, str, str]
             "P2",
             "ALT_ETOPS",
             "Marginal alternate / diversion weather",
+            f"Meteorologia marginal em {airport}, relevante dentro da janela operacional do voo, deve entrar no briefing como opção de alternante/desvio.",
             "Rever adequacy, minima e utilidade real do alternante/desvio.",
         )
 
@@ -181,17 +177,12 @@ def _classify_weather_line(line: str, airport: str) -> tuple[str, str, str, str]
         "P2",
         "MET",
         "Weather awareness",
+        f"Condição meteorológica relevante em {airport} dentro da janela operacional do voo.",
         "Rever impacto operacional e incluir no briefing se aplicável.",
     )
 
 
 def _build_airport_weather_blocks(lines: list[str]) -> dict[str, list[str]]:
-    """
-    Groups Airport Weather List content by airport header.
-    Example header:
-      LPPT/LIS LISBON/HUMBERTO DELGADO
-      KIAD/IAD WASHINGTON/DULLES INTL
-    """
     blocks: dict[str, list[str]] = defaultdict(list)
     current_airport = None
 
@@ -227,17 +218,19 @@ def _extract_weather_threats_from_airport_block(
 
         start, end = _parse_taf_group_window(line)
 
-        # If no explicit timing on the line, ignore it in v3.
-        # We want timed groups only, to stop over-collecting.
         if start is None or end is None:
-            continue
+            if line.startswith("SA "):
+                start = window_start
+                end = window_end
+            else:
+                continue
 
         start, end = _align_window_to_flight(start, end, window_start, window_end)
 
         if not _time_overlap_minutes(start, end, window_start, window_end):
             continue
 
-        priority, category, title, expected_action = _classify_weather_line(line, airport)
+        priority, category, title, why, expected_action = _classify_weather_line(line, airport)
 
         affected_phase = "General"
         if airport in {"KIAD", "FNLU"} and ("ws020" in line.lower() or "windshear" in line.lower()):
@@ -246,13 +239,6 @@ def _extract_weather_threats_from_airport_block(
             affected_phase = "Arrival"
         elif airport in ALTERNATE_LIKE_AIRPORTS:
             affected_phase = "Diversion"
-
-why = {
-    "Windshear / low-level windshear": f"Windshear em {airport} dentro da janela operacional do voo aumenta workload e deve entrar no briefing.",
-    "Convective activity / thunderstorms": f"Atividade convectiva prevista em {airport} dentro da janela operacional do voo aumenta workload, desvios táticos e risco de turbulência/precipitação forte.",
-    "Strong gusty wind": f"Rajadas fortes previstas em {airport} dentro da janela operacional do voo podem afetar a fase de aproximação/aterragem ou descolagem.",
-    "Marginal alternate / diversion weather": f"Meteorologia marginal em {airport}, relevante dentro da janela operacional do voo, deve entrar no briefing como opção de alternante/desvio.",
-}.get(title, f"Condição meteorológica relevante em {airport} dentro da janela operacional do voo.")
 
         threats.append(
             Threat(
@@ -282,9 +268,6 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
         lines = list(_lines(text))
         full_lower = text.lower()
 
-        # --------------------------------------------------
-        # MEL / CDL
-        # --------------------------------------------------
         mel_lines = []
         if "mel/cdl description" in full_lower or "addt fuel due to mel" in full_lower:
             for line in lines:
@@ -309,9 +292,6 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                 )
             )
 
-        # --------------------------------------------------
-        # Callsign with appended letter
-        # --------------------------------------------------
         m = re.search(r"\(FPL-([A-Z]+\d+[A-Z])-IS", text)
         if m:
             callsign = m.group(1)
@@ -331,9 +311,6 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                     )
                 )
 
-        # --------------------------------------------------
-        # Oceanic / ETOPS awareness
-        # --------------------------------------------------
         if any(tok in full_lower for tok in ["entry1", "etp1", "exit1", "oceanic clearance", "39n060w", "40n050w", "41n040w", "42n030w"]):
             raw_threats.append(
                 Threat(
@@ -350,9 +327,6 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                 )
             )
 
-        # --------------------------------------------------
-        # Weather List v3 parser
-        # --------------------------------------------------
         if "airport weather list" in full_lower or "destination:" in full_lower or "departure:" in full_lower:
             airport_blocks = _build_airport_weather_blocks(lines)
             for airport, airport_lines in airport_blocks.items():
@@ -366,9 +340,6 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                     )
                 )
 
-        # --------------------------------------------------
-        # Navigation / GNSS / interference
-        # --------------------------------------------------
         for line in lines:
             if _is_negative_line(line):
                 continue
@@ -393,9 +364,6 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                     )
                 )
 
-        # --------------------------------------------------
-        # Runway / procedure / navaid limitation
-        # --------------------------------------------------
         for line in lines:
             if _is_negative_line(line):
                 continue
@@ -424,9 +392,6 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                     )
                 )
 
-    # --------------------------------------------------
-    # Deduplicate / consolidate
-    # --------------------------------------------------
     grouped: dict[tuple[str, str, str, str], list[Threat]] = defaultdict(list)
     for threat in raw_threats:
         key = _make_key(threat.priority, threat.category, threat.title, threat.affected_area)
