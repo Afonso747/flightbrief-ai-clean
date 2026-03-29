@@ -15,7 +15,7 @@ NEGATIVE_PATTERNS = [
 ]
 
 RELEVANT_AIRPORTS = {
-    "FNLU", "LPPT", "LPFR", "LPPR", "LEZL", "LEMG", "DGAA", "DAAT"
+    "FNLU", "LPPT", "LPFR", "LEZL", "LEMG", "DGAA", "DAAT"
 }
 
 
@@ -237,7 +237,7 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
 
             lower = line.lower()
             if not _contains_relevant_airport(line) and not any(
-                ap.lower() in lower for ap in ["fnlu", "lppt", "lpfr", "lppr", "lezl", "lemg", "daat", "dgaa"]
+                ap.lower() in lower for ap in ["fnlu", "lppt", "lpfr", "lezl", "lemg", "daat", "dgaa"]
             ):
                 continue
 
@@ -261,30 +261,38 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                 )
 
         # --------------------------------------------------
-        # Tropopause proximity
+        # Tropopause proximity: only if within ±5000 ft
         # --------------------------------------------------
         if "w/v trop" in full_lower:
-            trop_line = None
             for line in lines:
-                if "W/V TROP" in line or "w/v trop" in line.lower():
-                    trop_line = line.strip()
-                    break
+                if "W/V TROP" not in line and "w/v trop" not in line.lower():
+                    continue
 
-            if trop_line and re.search(r"\b390\b|\b400\b", text):
-                raw_threats.append(
-                    Threat(
-                        priority="P2",
-                        category="MET",
-                        title="Tropopause proximity / CAT awareness",
-                        source_section="Operational Flight Plan",
-                        highlight_text=trop_line,
-                        why_it_matters="Nível de voo próximo da tropopause pode aumentar o risco de clear air turbulence.",
-                        expected_crew_action="Antecipar possível CAT e gerir awareness de cabine e seat belts.",
-                        affected_phase="Enroute",
-                        affected_area="Cruise",
-                        page_number=pnum,
+                fl_match = re.search(r"\b(3[2-9]0|400)\b", line)
+                trop_match = re.search(r"\|\s*\d{1,2}/\d{3}\s+(\d{2})\|", line)
+
+                if not fl_match or not trop_match:
+                    continue
+
+                aircraft_fl = int(fl_match.group(1))        # ex: 390
+                trop_fl = int(trop_match.group(1)) * 10     # ex: 39 -> 390, 52 -> 520
+
+                if abs((trop_fl - aircraft_fl) * 100) <= 5000:
+                    raw_threats.append(
+                        Threat(
+                            priority="P2",
+                            category="MET",
+                            title="Tropopause proximity / CAT awareness",
+                            source_section="Operational Flight Plan",
+                            highlight_text=line.strip(),
+                            why_it_matters="Nível de voo próximo da tropopause pode aumentar o risco de clear air turbulence.",
+                            expected_crew_action="Antecipar possível CAT e gerir awareness de cabine e seat belts.",
+                            affected_phase="Enroute",
+                            affected_area="Cruise",
+                            page_number=pnum,
+                        )
                     )
-                )
+                    break
 
     # --------------------------------------------------
     # Deduplicate / consolidate
