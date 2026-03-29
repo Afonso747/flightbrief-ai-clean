@@ -247,12 +247,12 @@ def _extract_weather_threats_from_airport_block(
         elif airport in ALTERNATE_LIKE_AIRPORTS:
             affected_phase = "Diversion"
 
-        why = {
-            "Windshear / low-level windshear": "Windshear em fase crítica aumenta workload e deve entrar no briefing.",
-            "Convective activity / thunderstorms": "Atividade convectiva aumenta workload, desvios táticos e risco de turbulência/precipitação forte.",
-            "Strong gusty wind": "Rajadas fortes podem afetar a fase de aproximação/aterragem ou descolagem.",
-            "Marginal alternate / diversion weather": "Meteorologia marginal num alternante ou aeroporto de desvio deve entrar no briefing.",
-        }.get(title, "Condição meteorológica relevante dentro da janela operacional do voo.")
+why = {
+    "Windshear / low-level windshear": f"Windshear em {airport} dentro da janela operacional do voo aumenta workload e deve entrar no briefing.",
+    "Convective activity / thunderstorms": f"Atividade convectiva prevista em {airport} dentro da janela operacional do voo aumenta workload, desvios táticos e risco de turbulência/precipitação forte.",
+    "Strong gusty wind": f"Rajadas fortes previstas em {airport} dentro da janela operacional do voo podem afetar a fase de aproximação/aterragem ou descolagem.",
+    "Marginal alternate / diversion weather": f"Meteorologia marginal em {airport}, relevante dentro da janela operacional do voo, deve entrar no briefing como opção de alternante/desvio.",
+}.get(title, f"Condição meteorológica relevante em {airport} dentro da janela operacional do voo.")
 
         threats.append(
             Threat(
