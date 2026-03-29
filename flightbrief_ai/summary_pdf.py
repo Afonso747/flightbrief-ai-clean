@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from io import BytesIO
-from textwrap import wrap
 
+from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.pdfgen import canvas
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
 
 from .models import Threat
 
@@ -13,36 +14,73 @@ from .models import Threat
 class ThreatSummaryPDF:
     def build(self, filename: str, threats: list[Threat]) -> bytes:
         out = BytesIO()
-        c = canvas.Canvas(out, pagesize=A4)
-        width, height = A4
-        y = height - 20 * mm
 
-        def write_line(text: str, size: int = 10, bold: bool = False, gap: float = 5 * mm):
-            nonlocal y
-            if y < 20 * mm:
-                c.showPage()
-                y = height - 20 * mm
-            c.setFont("Helvetica-Bold" if bold else "Helvetica", size)
-            for line in wrap(text, 100):
-                c.drawString(15 * mm, y, line)
-                y -= 4.5 * mm
-            y -= gap - 4.5 * mm
+        doc = SimpleDocTemplate(
+            out,
+            pagesize=A4,
+            rightMargin=15 * mm,
+            leftMargin=15 * mm,
+            topMargin=15 * mm,
+            bottomMargin=15 * mm,
+        )
 
-        write_line("FlightBrief AI - Threat Summary", 16, True, 8 * mm)
-        write_line(f"Source file: {filename}", 10, False, 6 * mm)
+        styles = getSampleStyleSheet()
+        title_style = styles["Title"]
+        heading_style = styles["Heading2"]
+        normal_style = styles["BodyText"]
 
-        for priority in ["P1", "P2", "P3"]:
+        small_style = ParagraphStyle(
+            "Small",
+            parent=normal_style,
+            fontName="Helvetica",
+            fontSize=9,
+            leading=12,
+            spaceAfter=2 * mm,
+        )
+
+        item_title_style = ParagraphStyle(
+            "ItemTitle",
+            parent=normal_style,
+            fontName="Helvetica-Bold",
+            fontSize=11,
+            leading=13,
+            textColor=colors.black,
+            spaceAfter=1 * mm,
+        )
+
+        story = []
+        story.append(Paragraph("FlightBrief AI - Threat Summary", title_style))
+        story.append(Spacer(1, 4 * mm))
+        story.append(Paragraph(f"Source file: {filename}", small_style))
+        story.append(Spacer(1, 6 * mm))
+
+        priority_order = ["P1", "P2", "P3"]
+
+        for idx_priority, priority in enumerate(priority_order):
             subset = [t for t in threats if t.priority == priority]
-            write_line(f"{priority}", 13, True, 4 * mm)
-            if not subset:
-                write_line("Nil", 10, False, 4 * mm)
-                continue
-            for idx, t in enumerate(subset, start=1):
-                write_line(f"{idx}. {t.title}", 11, True, 1 * mm)
-                write_line(f"Category: {t.category} | Source: {t.source_section} | Page: {t.page_number}", 9)
-                write_line(f"Highlight: {t.highlight_text}", 9)
-                write_line(f"Why it matters: {t.why_it_matters}", 9)
-                write_line(f"Expected crew action: {t.expected_crew_action}", 9, False, 5 * mm)
 
-        c.save()
+            story.append(Paragraph(priority, heading_style))
+            story.append(Spacer(1, 2 * mm))
+
+            if not subset:
+                story.append(Paragraph("Nil", normal_style))
+                story.append(Spacer(1, 4 * mm))
+            else:
+                for idx, t in enumerate(subset, start=1):
+                    story.append(Paragraph(f"{idx}. {t.title}", item_title_style))
+                    story.append(
+                        Paragraph(
+                            f"<b>Category:</b> {t.category} &nbsp;&nbsp; <b>Source:</b> {t.source_section} &nbsp;&nbsp; <b>Page:</b> {t.page_number}",
+                            small_style,
+                        )
+                    )
+                    story.append(Paragraph(f"<b>Highlight:</b> {t.highlight_text}", small_style))
+                    story.append(Paragraph(f"<b>Why it matters:</b> {t.why_it_matters}", small_style))
+                    story.append(Paragraph(f"<b>Expected crew action:</b> {t.expected_crew_action}", small_style))
+                    story.append(Spacer(1, 4 * mm))
+
+            if idx_priority < len(priority_order) - 1:
+                story.append(Spacer(1, 4 * mm))
+
+        doc.build(story)
         return out.getvalue()
