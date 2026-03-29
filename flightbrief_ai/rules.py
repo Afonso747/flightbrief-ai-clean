@@ -20,6 +20,11 @@ RELEVANT_AIRPORTS = {
     "FNLU", "DGAA", "DAAT"
 }
 
+ALTERNATE_LIKE_AIRPORTS = {
+    "LPLA", "LPPR", "LPFR", "LPPD", "LPAZ", "CYHZ", "CYQX", "TXKF",
+    "LEMD", "LEMG", "KBGR", "DGAA", "DAAT"
+}
+
 
 def _lines(text: str) -> Iterable[str]:
     return [ln.strip() for ln in text.splitlines() if ln.strip()]
@@ -50,66 +55,33 @@ def _hhmm_to_minutes(hhmm: str) -> int:
 
 
 def _extract_flight_window(pages: list[dict]) -> tuple[int | None, int | None]:
-    """
-    Returns:
-        window_start = ETD in minutes
-        window_end = ETA + 2h in minutes, rolled into next day if needed
-    """
-    joined = "\n".join(page["text"] for page in pages[:8])
+    joined = "\n".join(page["text"] for page in pages[:10])
 
     etd_match = re.search(r"\bETD\s+(\d{4})\b", joined)
     eta_match = re.search(r"\bETA\s+(\d{4})\b", joined)
 
-    if not etd_match or not eta_match:
-        # fallback from cover like "IAD 22:30 / LIS 05:35"
-        cover_match = re.search(r"\b[A-Z]{3}\s+(\d{2}:\d{2}).*?\b[A-Z]{3}\s+(\d{2}:\d{2})", joined, re.DOTALL)
-        if cover_match:
-            etd = cover_match.group(1).replace(":", "")
-            eta = cover_match.group(2).replace(":", "")
-            start = _hhmm_to_minutes(etd)
-            end = _hhmm_to_minutes(eta)
-            if end < start:
-                end += 24 * 60
-            end += 120
-            return start, end
-        return None, None
-
-    start = _hhmm_to_minutes(etd_match.group(1))
-    end = _hhmm_to_minutes(eta_match.group(1))
-
-    if end < start:
-        end += 24 * 60
-
-    end += 120  # ETA + 2h
-    return start, end
-
-
-def _parse_taf_window(line: str) -> tuple[int | None, int | None]:
-    """
-    Supports:
-    TEMPO 0718/0720
-    PROB40 TEMPO 0806/0811
-    BECMG 0808/0810
-    FM080600
-    FT 071700 0718/0824  (ignored here; FT header itself isn't the threat line)
-    """
-    m = re.search(r"\b(?:TEMPO|BECMG)\s+(\d{4})/(\d{4})\b", line)
-    if m:
-        start = _hhmm_to_minutes(m.group(1)[-4:])
-        end = _hhmm_to_minutes(m.group(2)[-4:])
+    if etd_match and eta_match:
+        start = _hhmm_to_minutes(etd_match.group(1))
+        end = _hhmm_to_minutes(eta_match.group(1))
+        if end < start:
+            end += 24 * 60
+        end += 120
         return start, end
 
-    m = re.search(r"\bPROB\d{2}\s+TEMPO\s+(\d{4})/(\d{4})\b", line)
-    if m:
-        start = _hhmm_to_minutes(m.group(1)[-4:])
-        end = _hhmm_to_minutes(m.group(2)[-4:])
+    cover_match = re.search(
+        r"\b[A-Z]{3}\s+(\d{2}:\d{2}).*?\b[A-Z]{3}\s+(\d{2}:\d{2})",
+        joined,
+        re.DOTALL,
+    )
+    if cover_match:
+        etd = cover_match.group(1).replace(":", "")
+        eta = cover_match.group(2).replace(":", "")
+        start = _hhmm_to_minutes(etd)
+        end = _hhmm_to_minutes(eta)
+        if end < start:
+            end += 24 * 60
+        end += 120
         return start, end
-
-    m = re.search(r"\bFM(\d{6})\b", line)
-    if m:
-        hhmm = m.group(1)[-4:]
-        start = _hhmm_to_minutes(hhmm)
-        return start, start + 240  # rough persistence window for FM group
 
     return None, None
 
@@ -118,31 +90,186 @@ def _time_overlap_minutes(a_start: int, a_end: int, b_start: int, b_end: int) ->
     return max(a_start, b_start) < min(a_end, b_end)
 
 
-def _weather_line_applicable(line: str, window_start: int | None, window_end: int | None) -> bool:
-    """
-    If line has an explicit weather time group, require overlap with ETD..ETA+2h.
-    If no explicit time group, keep it only for direct observed conditions (SA) or current summaries sparingly.
-    """
-    if window_start is None or window_end is None:
-        return True
-
-    start, end = _parse_taf_window(line)
-    if start is None or end is None:
-        # allow only explicit observed weather lines if they contain strong conditions
-        if line.startswith("SA "):
-            return True
-        return False
-
-    # handle crossing midnight in forecast groups
+def _align_window_to_flight(start: int, end: int, flight_start: int, flight_end: int) -> tuple[int, int]:
     if end < start:
         end += 24 * 60
 
-    # align forecast group to same day span as flight window
-    if start < window_start - 12 * 60:
+    # roll forecast interval forward if needed
+    if start < flight_start - 12 * 60:
         start += 24 * 60
         end += 24 * 60
 
-    return _time_overlap_minutes(start, end, window_start, window_end)
+    return start, end
+
+
+def _parse_taf_group_window(line: str) -> tuple[int | None, int | None]:
+    # PROB40 TEMPO 0806/0811
+    m = re.search(r"\bPROB\d{2}\s+TEMPO\s+(\d{4})/(\d{4})\b", line)
+    if m:
+        return _hhmm_to_minutes(m.group(1)[-4:]), _hhmm_to_minutes(m.group(2)[-4:])
+
+    # TEMPO 0718/0720
+    m = re.search(r"\bTEMPO\s+(\d{4})/(\d{4})\b", line)
+    if m:
+        return _hhmm_to_minutes(m.group(1)[-4:]), _hhmm_to_minutes(m.group(2)[-4:])
+
+    # BECMG 0808/0810
+    m = re.search(r"\bBECMG\s+(\d{4})/(\d{4})\b", line)
+    if m:
+        return _hhmm_to_minutes(m.group(1)[-4:]), _hhmm_to_minutes(m.group(2)[-4:])
+
+    # FM080600
+    m = re.search(r"\bFM(\d{6})\b", line)
+    if m:
+        start = _hhmm_to_minutes(m.group(1)[-4:])
+        return start, start + 360  # assume persistence over next ~6h
+
+    # FT 071700 0718/0824
+    m = re.search(r"\bFT\s+\d{6}\s+(\d{4})/(\d{4})\b", line)
+    if m:
+        return _hhmm_to_minutes(m.group(1)[-4:]), _hhmm_to_minutes(m.group(2)[-4:])
+
+    return None, None
+
+
+def _line_has_weather_threat(line: str) -> bool:
+    lower = line.lower()
+    return bool(
+        re.search(
+            r"\btsra\b|\bvcts\b|\bcb\b|\btcu\b|\b\+ra\b|\b-fzdz\b|\bshsn\b|\bshra\b|\b-ra\b|\bbr\b|\bovc0\d{2}\b|\bbkn0\d{2}\b|\b\d{2,3}g\d{2,3}kt\b|g\d{2,3}kt|ws020|windshear",
+            lower,
+        )
+    )
+
+
+def _classify_weather_line(line: str, airport: str) -> tuple[str, str, str, str]:
+    lower = line.lower()
+
+    if "ws020" in lower or "windshear" in lower:
+        return (
+            "P2",
+            "MET",
+            "Windshear / low-level windshear",
+            "Reforçar briefing de departure/arrival e awareness para windshear recovery.",
+        )
+
+    if re.search(r"\btsra\b|\bvcts\b|\bcb\b|\btcu\b|\b\+ra\b", lower):
+        return (
+            "P2",
+            "MET",
+            "Convective activity / thunderstorms",
+            "Briefar weather avoidance e monitorização radar/ATC.",
+        )
+
+    if re.search(r"\b\d{2,3}g\d{2,3}kt\b|g\d{2,3}kt", lower):
+        return (
+            "P2",
+            "MET",
+            "Strong gusty wind",
+            "Confirmar runway expectation e estratégia para vento rajado.",
+        )
+
+    if airport in ALTERNATE_LIKE_AIRPORTS and re.search(r"\bbr\b|\bovc0\d{2}\b|\bbkn0\d{2}\b|\b-fzdz\b|\bshsn\b|\bshra\b|\b-ra\b|\bsn\b", lower):
+        return (
+            "P2",
+            "ALT_ETOPS",
+            "Marginal alternate / diversion weather",
+            "Rever adequacy, minima e utilidade real do alternante/desvio.",
+        )
+
+    return (
+        "P2",
+        "MET",
+        "Weather awareness",
+        "Rever impacto operacional e incluir no briefing se aplicável.",
+    )
+
+
+def _build_airport_weather_blocks(lines: list[str]) -> dict[str, list[str]]:
+    """
+    Groups Airport Weather List content by airport header.
+    Example header:
+      LPPT/LIS LISBON/HUMBERTO DELGADO
+      KIAD/IAD WASHINGTON/DULLES INTL
+    """
+    blocks: dict[str, list[str]] = defaultdict(list)
+    current_airport = None
+
+    for line in lines:
+        header = re.match(r"^([A-Z]{4})/[A-Z0-9]{2,4}\b", line)
+        if header:
+            current_airport = header.group(1)
+            continue
+
+        if current_airport:
+            blocks[current_airport].append(line)
+
+    return dict(blocks)
+
+
+def _extract_weather_threats_from_airport_block(
+    airport: str,
+    lines: list[str],
+    page_number: int,
+    window_start: int | None,
+    window_end: int | None,
+) -> list[Threat]:
+    threats: list[Threat] = []
+
+    if window_start is None or window_end is None:
+        return threats
+
+    for line in lines:
+        if _is_negative_line(line):
+            continue
+        if not _line_has_weather_threat(line):
+            continue
+
+        start, end = _parse_taf_group_window(line)
+
+        # If no explicit timing on the line, ignore it in v3.
+        # We want timed groups only, to stop over-collecting.
+        if start is None or end is None:
+            continue
+
+        start, end = _align_window_to_flight(start, end, window_start, window_end)
+
+        if not _time_overlap_minutes(start, end, window_start, window_end):
+            continue
+
+        priority, category, title, expected_action = _classify_weather_line(line, airport)
+
+        affected_phase = "General"
+        if airport in {"KIAD", "FNLU"} and ("ws020" in line.lower() or "windshear" in line.lower()):
+            affected_phase = "Departure"
+        elif airport == "LPPT":
+            affected_phase = "Arrival"
+        elif airport in ALTERNATE_LIKE_AIRPORTS:
+            affected_phase = "Diversion"
+
+        why = {
+            "Windshear / low-level windshear": "Windshear em fase crítica aumenta workload e deve entrar no briefing.",
+            "Convective activity / thunderstorms": "Atividade convectiva aumenta workload, desvios táticos e risco de turbulência/precipitação forte.",
+            "Strong gusty wind": "Rajadas fortes podem afetar a fase de aproximação/aterragem ou descolagem.",
+            "Marginal alternate / diversion weather": "Meteorologia marginal num alternante ou aeroporto de desvio deve entrar no briefing.",
+        }.get(title, "Condição meteorológica relevante dentro da janela operacional do voo.")
+
+        threats.append(
+            Threat(
+                priority=priority,
+                category=category,
+                title=title,
+                source_section="Weather List",
+                highlight_text=line,
+                why_it_matters=why,
+                expected_crew_action=expected_action,
+                affected_phase=affected_phase,
+                affected_area=airport,
+                page_number=page_number,
+            )
+        )
+
+    return threats
 
 
 def detect_threats(pages: list[dict]) -> list[Threat]:
@@ -224,98 +351,20 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
             )
 
         # --------------------------------------------------
-        # Weather list with airport context + time filtering
+        # Weather List v3 parser
         # --------------------------------------------------
-        current_airport = None
-
-        for line in lines:
-            if _is_negative_line(line):
-                continue
-
-            airport_header = re.match(r"^([A-Z]{4})/[A-Z0-9]{2,4}\b", line)
-            if airport_header:
-                current_airport = airport_header.group(1)
-
-            lower = line.lower()
-
-            # Windshear
-            if "ws020" in lower or "windshear" in lower:
-                if _weather_line_applicable(line, window_start, window_end):
-                    area = current_airport or "General"
-                    raw_threats.append(
-                        Threat(
-                            priority="P2",
-                            category="MET",
-                            title="Windshear / low-level windshear",
-                            source_section="Weather List",
-                            highlight_text=line,
-                            why_it_matters="Windshear em fase crítica aumenta workload e deve entrar no briefing.",
-                            expected_crew_action="Reforçar briefing de departure/arrival e awareness para windshear recovery.",
-                            affected_phase="Departure" if area == "KIAD" else "General",
-                            affected_area=area,
-                            page_number=pnum,
-                        )
+        if "airport weather list" in full_lower or "destination:" in full_lower or "departure:" in full_lower:
+            airport_blocks = _build_airport_weather_blocks(lines)
+            for airport, airport_lines in airport_blocks.items():
+                raw_threats.extend(
+                    _extract_weather_threats_from_airport_block(
+                        airport=airport,
+                        lines=airport_lines,
+                        page_number=pnum,
+                        window_start=window_start,
+                        window_end=window_end,
                     )
-                continue
-
-            # Convective / TS / CB
-            if re.search(r"\btsra\b|\bvcts\b|\bcb\b|\b\+ra\b|\btcu\b|\bembd ts\b", lower):
-                if _weather_line_applicable(line, window_start, window_end):
-                    area = current_airport or "General"
-                    raw_threats.append(
-                        Threat(
-                            priority="P2",
-                            category="MET",
-                            title="Convective activity / thunderstorms",
-                            source_section="Weather List / SIGMET",
-                            highlight_text=line,
-                            why_it_matters="Atividade convectiva aumenta workload, desvios táticos e risco de turbulência/precipitação forte.",
-                            expected_crew_action="Briefar weather avoidance e monitorização radar/ATC.",
-                            affected_phase="General",
-                            affected_area=area,
-                            page_number=pnum,
-                        )
-                    )
-                continue
-
-            # Gusty wind
-            if re.search(r"\b\d{2,3}g\d{2,3}kt\b|g\d{2,3}kt", lower):
-                if _weather_line_applicable(line, window_start, window_end):
-                    area = current_airport or "General"
-                    raw_threats.append(
-                        Threat(
-                            priority="P2",
-                            category="MET",
-                            title="Strong gusty wind",
-                            source_section="Weather List",
-                            highlight_text=line,
-                            why_it_matters="Rajadas fortes podem afetar a fase de aproximação/aterragem ou descolagem.",
-                            expected_crew_action="Confirmar runway expectation e estratégia para vento rajado.",
-                            affected_phase="General",
-                            affected_area=area,
-                            page_number=pnum,
-                        )
-                    )
-                continue
-
-            # Marginal alternate / diversion weather
-            if current_airport in {"LPLA", "LPPR", "LPFR", "LPPD", "LPAZ", "CYHZ", "CYQX", "TXKF", "LEMD", "LEMG", "KBGR"}:
-                if re.search(r"\bbr\b|\bovc0\d{2}\b|\bbkn0\d{2}\b|\b-fzdz\b|\bshsn\b|\bshra\b|\b-ra\b|\bsn\b", lower):
-                    if _weather_line_applicable(line, window_start, window_end):
-                        raw_threats.append(
-                            Threat(
-                                priority="P2",
-                                category="ALT_ETOPS",
-                                title="Marginal alternate / diversion weather",
-                                source_section="Weather List",
-                                highlight_text=line,
-                                why_it_matters="Meteorologia marginal num alternante ou aeroporto de desvio deve entrar no briefing.",
-                                expected_crew_action="Rever adequacy, minima e utilidade real do alternante/desvio.",
-                                affected_phase="Diversion",
-                                affected_area=current_airport,
-                                page_number=pnum,
-                            )
-                        )
+                )
 
         # --------------------------------------------------
         # Navigation / GNSS / interference
@@ -374,14 +423,6 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                         page_number=pnum,
                     )
                 )
-
-        # --------------------------------------------------
-        # Tropopause proximity: ±5000 ft
-        # --------------------------------------------------
-        if "position| coord" in full_lower:
-            for line in lines:
-                # simplified placeholder for later refinement
-                pass
 
     # --------------------------------------------------
     # Deduplicate / consolidate
