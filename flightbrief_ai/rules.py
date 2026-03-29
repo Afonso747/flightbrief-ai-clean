@@ -51,7 +51,7 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                     ))
 
         # Callsign with appended letter
-        m = re.search(r"\((FPL-[A-Z]+\d+[A-Z]-IS", text)
+        m = re.search(r"\(FPL-[A-Z]+\d+[A-Z]-IS", text)
         if m:
             callsign = m.group(1).split("-")[1]
             if re.search(r"\d+[A-Z]$", callsign):
