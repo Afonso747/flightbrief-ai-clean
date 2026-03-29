@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from collections import defaultdict
 from typing import Iterable
@@ -23,6 +24,30 @@ RELEVANT_AIRPORTS = {
 ALTERNATE_LIKE_AIRPORTS = {
     "LPLA", "LPPR", "LPFR", "LPPD", "LPAZ", "CYHZ", "CYQX", "TXKF",
     "LEMD", "LEMG", "KBGR", "DGAA", "DAAT"
+}
+
+# Static airport coordinates (good enough for the prototype)
+AIRPORT_COORDS = {
+    "KIAD": (38.9445, -77.4558),
+    "LPPT": (38.7742, -9.1342),
+    "LPLA": (38.7618, -27.0908),
+    "KBGR": (44.8074, -68.8281),
+    "LEMD": (40.4722, -3.5608),
+    "LEMG": (36.6749, -4.4991),
+    "LPFR": (37.0144, -7.9659),
+    "LPPR": (41.2421, -8.6781),
+    "LPPD": (37.7412, -25.6979),
+    "LPAZ": (36.9714, -25.1706),
+    "KBWI": (39.1754, -76.6684),
+    "KPHL": (39.8744, -75.2424),
+    "KEWR": (40.6895, -74.1745),
+    "KRDU": (35.8776, -78.7875),
+    "TXKF": (32.3639, -64.6787),
+    "CYHZ": (44.8808, -63.5086),
+    "CYQX": (48.9369, -54.5681),
+    "FNLU": (-8.8584, 13.2312),
+    "DGAA": (5.6052, -0.1668),
+    "DAAT": (22.8115, 5.4511),
 }
 
 
@@ -54,46 +79,203 @@ def _hhmm_to_minutes(hhmm: str) -> int:
     return hh * 60 + mm
 
 
-def _extract_flight_window(pages: list[dict]) -> tuple[int | None, int | None]:
-    joined = "\n".join(page["text"] for page in pages[:10])
+def _minutes_to_hhmm(minutes: int) -> str:
+    minutes = minutes % (24 * 60)
+    hh = minutes // 60
+    mm = minutes % 60
+    return f"{hh:02d}:{mm:02d}Z"
+
+
+def _extract_route_context(pages: list[dict]) -> dict:
+    joined = "\n".join(page["text"] for page in pages[:12])
+
+    etd = None
+    eta = None
+    departure = None
+    destination = None
+    etops_windows: dict[str, tuple[int, int]] = {}
 
     etd_match = re.search(r"\bETD\s+(\d{4})\b", joined)
     eta_match = re.search(r"\bETA\s+(\d{4})\b", joined)
 
-    if etd_match and eta_match:
-        start = _hhmm_to_minutes(etd_match.group(1))
-        end = _hhmm_to_minutes(eta_match.group(1))
-        if end < start:
-            end += 24 * 60
-        end += 120
-        return start, end
+    if etd_match:
+        etd = _hhmm_to_minutes(etd_match.group(1))
+    if eta_match:
+        eta = _hhmm_to_minutes(eta_match.group(1))
 
     cover_match = re.search(
         r"\b[A-Z]{3}\s+(\d{2}:\d{2}).*?\b[A-Z]{3}\s+(\d{2}:\d{2})",
         joined,
         re.DOTALL,
     )
-    if cover_match:
-        etd = cover_match.group(1).replace(":", "")
-        eta = cover_match.group(2).replace(":", "")
-        start = _hhmm_to_minutes(etd)
-        end = _hhmm_to_minutes(eta)
-        if end < start:
-            end += 24 * 60
-        end += 120
-        return start, end
+    if cover_match and (etd is None or eta is None):
+        etd = _hhmm_to_minutes(cover_match.group(1).replace(":", ""))
+        eta = _hhmm_to_minutes(cover_match.group(2).replace(":", ""))
 
-    return None, None
+    route_match = re.search(r"\b[A-Z]{3,}\d+\s+\d{2}[A-Z]{3}\d{4}\s+([A-Z]{4})\s+([A-Z]{4})\b", joined)
+    if route_match:
+        departure = route_match.group(1)
+        destination = route_match.group(2)
+
+    if etd is not None and eta is not None and eta < etd:
+        eta += 24 * 60
+
+    # ETOPS/enroute suitability windows
+    for ap, start_hh, start_mm, end_hh, end_mm in re.findall(
+        r"\b([A-Z]{4})\s+(\d{2}):(\d{2})\s+(\d{2}):(\d{2})\b",
+        joined,
+    ):
+        start = int(start_hh) * 60 + int(start_mm)
+        end = int(end_hh) * 60 + int(end_mm)
+
+        if etd is not None and end < start:
+            end += 24 * 60
+        if etd is not None and start < etd - 12 * 60:
+            start += 24 * 60
+            end += 24 * 60
+
+        etops_windows[ap] = (start, end)
+
+    return {
+        "etd": etd,
+        "eta": eta,
+        "departure": departure,
+        "destination": destination,
+        "etops_windows": etops_windows,
+    }
+
+
+def _parse_latlon_compact(value: str) -> float:
+    """
+    Examples:
+      N3905.3 -> 39 + 5.3/60
+      W07459.6 -> -(74 + 59.6/60)
+    """
+    hemi = value[0]
+    body = value[1:]
+
+    if hemi in {"N", "S"}:
+        deg = int(body[:2])
+        minutes = float(body[2:])
+    else:
+        deg = int(body[:3])
+        minutes = float(body[3:])
+
+    decimal = deg + minutes / 60.0
+    if hemi in {"S", "W"}:
+        decimal *= -1
+    return decimal
+
+
+def _haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    r_km = 6371.0
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    km = r_km * c
+    return km * 0.539957
+
+
+def _parse_route_times(pages: list[dict]) -> dict[str, int]:
+    """
+    Parse TOT times from OFP route pages.
+    Returns point_name -> minutes from midnight UTC.
+    """
+    point_times: dict[str, int] = {}
+
+    for page in pages:
+        text = page["text"]
+        lines = _lines(text)
+        for line in lines:
+            # Example:
+            # ENTRY1 | 23 548 | |25/099 27|0143| | | |
+            # 4050N | 6 548 | 350 |25/099 39|0232| | | |
+            m = re.match(r"^([A-Z0-9-]+)\s*\|.*\|(\d{4})\|(?:\s*\|\s*)*$", line)
+            if m:
+                point = m.group(1).strip()
+                tot = m.group(2)
+                point_times[point] = _hhmm_to_minutes(tot)
+                continue
+
+            # More permissive fallback
+            m = re.match(r"^([A-Z0-9-]+)\s*\|.*\|(\d{4})\|", line)
+            if m:
+                point = m.group(1).strip()
+                tot = m.group(2)
+                point_times[point] = _hhmm_to_minutes(tot)
+
+    return point_times
+
+
+def _parse_route_coords(pages: list[dict]) -> dict[str, tuple[float, float]]:
+    """
+    Parse waypoint coordinates from upper wind pages:
+      TOC |N3905.3 |
+      |W07459.6 |
+    """
+    route_coords: dict[str, tuple[float, float]] = {}
+
+    for page in pages:
+        lines = _lines(page["text"])
+        i = 0
+        while i < len(lines) - 1:
+            line1 = lines[i]
+            line2 = lines[i + 1]
+
+            m1 = re.match(r"^([A-Z0-9-]+)\s*\|\s*([NS]\d{4,5}\.\d)\s*\|", line1)
+            m2 = re.match(r"^\|\s*([EW]\d{5,6}\.\d)\s*\|", line2)
+
+            if m1 and m2:
+                point = m1.group(1).strip()
+                lat = _parse_latlon_compact(m1.group(2))
+                lon = _parse_latlon_compact(m2.group(1))
+                route_coords[point] = (lat, lon)
+                i += 2
+                continue
+
+            i += 1
+
+    return route_coords
+
+
+def _build_route_points_with_time_and_coords(pages: list[dict], etd: int | None) -> list[dict]:
+    point_times = _parse_route_times(pages)
+    point_coords = _parse_route_coords(pages)
+
+    route_points = []
+    for point, (lat, lon) in point_coords.items():
+        if point not in point_times:
+            continue
+
+        tot_abs = point_times[point]
+        if etd is not None and tot_abs < etd - 12 * 60:
+            tot_abs += 24 * 60
+
+        route_points.append(
+            {
+                "point": point,
+                "lat": lat,
+                "lon": lon,
+                "time": tot_abs,
+            }
+        )
+
+    route_points.sort(key=lambda x: x["time"])
+    return route_points
 
 
 def _time_overlap_minutes(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
     return max(a_start, b_start) < min(a_end, b_end)
 
 
-def _align_window_to_flight(start: int, end: int, flight_start: int, flight_end: int) -> tuple[int, int]:
+def _align_window_to_reference(start: int, end: int, ref_start: int) -> tuple[int, int]:
     if end < start:
         end += 24 * 60
-    if start < flight_start - 12 * 60:
+    if start < ref_start - 12 * 60:
         start += 24 * 60
         end += 24 * 60
     return start, end
@@ -134,7 +316,62 @@ def _line_has_weather_threat(line: str) -> bool:
     )
 
 
-def _classify_weather_line(line: str, airport: str) -> tuple[str, str, str, str, str]:
+def _get_airport_reference_time(airport: str, ctx: dict) -> int | None:
+    etd = ctx["etd"]
+    eta = ctx["eta"]
+    departure = ctx["departure"]
+    destination = ctx["destination"]
+    etops_windows = ctx["etops_windows"]
+    route_points = ctx["route_points"]
+
+    if etd is None or eta is None:
+        return None
+
+    if airport == departure:
+        return etd
+
+    if airport == destination:
+        return eta
+
+    if airport in etops_windows:
+        start, end = etops_windows[airport]
+        return (start + end) // 2
+
+    if airport in AIRPORT_COORDS and route_points:
+        ap_lat, ap_lon = AIRPORT_COORDS[airport]
+        best = min(
+            route_points,
+            key=lambda rp: _haversine_nm(ap_lat, ap_lon, rp["lat"], rp["lon"]),
+        )
+        return best["time"]
+
+    if airport in ALTERNATE_LIKE_AIRPORTS:
+        return eta
+
+    return None
+
+
+def _get_airport_applicability_window(airport: str, ctx: dict) -> tuple[int | None, int | None]:
+    ref_time = _get_airport_reference_time(airport, ctx)
+    if ref_time is None:
+        return None, None
+
+    etd = ctx["etd"]
+    eta = ctx["eta"]
+    departure = ctx["departure"]
+    destination = ctx["destination"]
+
+    if airport == departure:
+        return max(0, ref_time - 60), ref_time + 60
+
+    if airport == destination:
+        return max(0, ref_time - 60), ref_time + 120
+
+    # enroute / ETOPS / alternate relevant airports
+    return max(0, ref_time - 60), ref_time + 60
+
+
+def _classify_weather_line(line: str, airport: str, window_label: str) -> tuple[str, str, str, str, str]:
     lower = line.lower()
 
     if "ws020" in lower or "windshear" in lower:
@@ -142,7 +379,7 @@ def _classify_weather_line(line: str, airport: str) -> tuple[str, str, str, str,
             "P2",
             "MET",
             "Windshear / low-level windshear",
-            f"Windshear em {airport} dentro da janela operacional do voo aumenta workload e deve entrar no briefing.",
+            f"Windshear em {airport} dentro da janela operacional aplicável ({window_label}) aumenta workload e deve entrar no briefing.",
             "Reforçar briefing de departure/arrival e awareness para windshear recovery.",
         )
 
@@ -151,7 +388,7 @@ def _classify_weather_line(line: str, airport: str) -> tuple[str, str, str, str,
             "P2",
             "MET",
             "Convective activity / thunderstorms",
-            f"Atividade convectiva prevista em {airport} dentro da janela operacional do voo aumenta workload, desvios táticos e risco de turbulência/precipitação forte.",
+            f"Atividade convectiva prevista em {airport} dentro da janela operacional aplicável ({window_label}) aumenta workload, desvios táticos e risco de turbulência/precipitação forte.",
             "Briefar weather avoidance e monitorização radar/ATC.",
         )
 
@@ -160,7 +397,7 @@ def _classify_weather_line(line: str, airport: str) -> tuple[str, str, str, str,
             "P2",
             "MET",
             "Strong gusty wind",
-            f"Rajadas fortes previstas em {airport} dentro da janela operacional do voo podem afetar a fase de aproximação/aterragem ou descolagem.",
+            f"Rajadas fortes previstas em {airport} dentro da janela operacional aplicável ({window_label}) podem afetar a fase de aproximação/aterragem ou descolagem.",
             "Confirmar runway expectation e estratégia para vento rajado.",
         )
 
@@ -169,7 +406,7 @@ def _classify_weather_line(line: str, airport: str) -> tuple[str, str, str, str,
             "P2",
             "ALT_ETOPS",
             "Marginal alternate / diversion weather",
-            f"Meteorologia marginal em {airport}, relevante dentro da janela operacional do voo, deve entrar no briefing como opção de alternante/desvio.",
+            f"Meteorologia marginal em {airport}, relevante dentro da janela operacional aplicável ({window_label}), deve entrar no briefing como opção de alternante/desvio.",
             "Rever adequacy, minima e utilidade real do alternante/desvio.",
         )
 
@@ -177,7 +414,7 @@ def _classify_weather_line(line: str, airport: str) -> tuple[str, str, str, str,
         "P2",
         "MET",
         "Weather awareness",
-        f"Condição meteorológica relevante em {airport} dentro da janela operacional do voo.",
+        f"Condição meteorológica relevante em {airport} dentro da janela operacional aplicável ({window_label}).",
         "Rever impacto operacional e incluir no briefing se aplicável.",
     )
 
@@ -202,13 +439,15 @@ def _extract_weather_threats_from_airport_block(
     airport: str,
     lines: list[str],
     page_number: int,
-    window_start: int | None,
-    window_end: int | None,
+    ctx: dict,
 ) -> list[Threat]:
     threats: list[Threat] = []
 
-    if window_start is None or window_end is None:
+    app_start, app_end = _get_airport_applicability_window(airport, ctx)
+    if app_start is None or app_end is None:
         return threats
+
+    window_label = f"{_minutes_to_hhmm(app_start)}–{_minutes_to_hhmm(app_end)}"
 
     for line in lines:
         if _is_negative_line(line):
@@ -218,26 +457,26 @@ def _extract_weather_threats_from_airport_block(
 
         start, end = _parse_taf_group_window(line)
 
+        # Only explicit timed groups or SA
         if start is None or end is None:
             if line.startswith("SA "):
-                start = window_start
-                end = window_end
+                start, end = app_start, app_end
             else:
                 continue
 
-        start, end = _align_window_to_flight(start, end, window_start, window_end)
+        start, end = _align_window_to_reference(start, end, app_start)
 
-        if not _time_overlap_minutes(start, end, window_start, window_end):
+        if not _time_overlap_minutes(start, end, app_start, app_end):
             continue
 
-        priority, category, title, why, expected_action = _classify_weather_line(line, airport)
+        priority, category, title, why, expected_action = _classify_weather_line(line, airport, window_label)
 
         affected_phase = "General"
-        if airport in {"KIAD", "FNLU"} and ("ws020" in line.lower() or "windshear" in line.lower()):
+        if airport == ctx.get("departure"):
             affected_phase = "Departure"
-        elif airport == "LPPT":
+        elif airport == ctx.get("destination"):
             affected_phase = "Arrival"
-        elif airport in ALTERNATE_LIKE_AIRPORTS:
+        elif airport in ALTERNATE_LIKE_AIRPORTS or airport in ctx.get("etops_windows", {}):
             affected_phase = "Diversion"
 
         threats.append(
@@ -260,7 +499,8 @@ def _extract_weather_threats_from_airport_block(
 
 def detect_threats(pages: list[dict]) -> list[Threat]:
     raw_threats: list[Threat] = []
-    window_start, window_end = _extract_flight_window(pages)
+    ctx = _extract_route_context(pages)
+    ctx["route_points"] = _build_route_points_with_time_and_coords(pages, ctx["etd"])
 
     for page in pages:
         pnum = page["page_number"]
@@ -268,6 +508,7 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
         lines = list(_lines(text))
         full_lower = text.lower()
 
+        # MEL / CDL
         mel_lines = []
         if "mel/cdl description" in full_lower or "addt fuel due to mel" in full_lower:
             for line in lines:
@@ -292,6 +533,7 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                 )
             )
 
+        # Callsign
         m = re.search(r"\(FPL-([A-Z]+\d+[A-Z])-IS", text)
         if m:
             callsign = m.group(1)
@@ -311,6 +553,7 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                     )
                 )
 
+        # Oceanic / ETOPS awareness
         if any(tok in full_lower for tok in ["entry1", "etp1", "exit1", "oceanic clearance", "39n060w", "40n050w", "41n040w", "42n030w"]):
             raw_threats.append(
                 Threat(
@@ -327,6 +570,7 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                 )
             )
 
+        # Weather List v5 parser
         if "airport weather list" in full_lower or "destination:" in full_lower or "departure:" in full_lower:
             airport_blocks = _build_airport_weather_blocks(lines)
             for airport, airport_lines in airport_blocks.items():
@@ -335,11 +579,11 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                         airport=airport,
                         lines=airport_lines,
                         page_number=pnum,
-                        window_start=window_start,
-                        window_end=window_end,
+                        ctx=ctx,
                     )
                 )
 
+        # Navigation / GNSS / interference
         for line in lines:
             if _is_negative_line(line):
                 continue
@@ -364,6 +608,7 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                     )
                 )
 
+        # NOTAM runway / procedure / navaid
         for line in lines:
             if _is_negative_line(line):
                 continue
@@ -392,6 +637,7 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                     )
                 )
 
+    # Deduplicate / consolidate
     grouped: dict[tuple[str, str, str, str], list[Threat]] = defaultdict(list)
     for threat in raw_threats:
         key = _make_key(threat.priority, threat.category, threat.title, threat.affected_area)
