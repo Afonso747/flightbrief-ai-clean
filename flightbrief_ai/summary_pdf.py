@@ -6,7 +6,7 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 
 from .models import Threat
 
@@ -67,7 +67,11 @@ class ThreatSummaryPDF:
                 story.append(Spacer(1, 4 * mm))
             else:
                 for idx, t in enumerate(subset, start=1):
-                    story.append(Paragraph(f"{idx}. {t.title}", item_title_style))
+                    display_title = t.title
+                    if t.affected_area and t.affected_area != "General":
+                        display_title = f"{t.title} — {t.affected_area}"
+
+                    story.append(Paragraph(f"{idx}. {display_title}", item_title_style))
                     story.append(
                         Paragraph(
                             f"<b>Category:</b> {t.category} &nbsp;&nbsp; <b>Source:</b> {t.source_section} &nbsp;&nbsp; <b>Page:</b> {t.page_number}",
