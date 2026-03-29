@@ -63,10 +63,7 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
             for line in lines:
                 if _is_negative_line(line):
                     continue
-                if (
-                    "ADDT FUEL DUE TO MEL" in line
-                    or re.search(r"^[A-Z]-\d{2}-\d{2}", line)
-                ):
+                if "ADDT FUEL DUE TO MEL" in line or re.search(r"^[A-Z]-\d{2}-\d{2}", line):
                     mel_lines.append(line)
 
         if mel_lines:
@@ -168,7 +165,7 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                     area = "LPPT"
                 elif "daat" in lower:
                     area = "DAAT"
-                elif "f nlu".replace(" ", "") in lower or "fnlu" in lower:
+                elif "fnlu" in lower:
                     area = "FNLU"
 
                 raw_threats.append(
@@ -213,7 +210,7 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                     )
 
             # RFF
-            elif "rffs" in lower or "rffs" in lower or "fire fighting" in lower:
+            elif "rffs" in lower or "fire fighting" in lower:
                 if _contains_relevant_airport(line):
                     raw_threats.append(
                         Threat(
@@ -239,7 +236,9 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                 continue
 
             lower = line.lower()
-            if not _contains_relevant_airport(line) and not any(ap.lower() in lower for ap in ["fnlu", "lppt", "lpfr", "lppr", "lezl", "lemg", "daat", "dgaa"]):
+            if not _contains_relevant_airport(line) and not any(
+                ap.lower() in lower for ap in ["fnlu", "lppt", "lpfr", "lppr", "lezl", "lemg", "daat", "dgaa"]
+            ):
                 continue
 
             if (
@@ -263,59 +262,50 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
 
         # --------------------------------------------------
         # Tropopause proximity
-        # Consolidate later, but don't create on every page unless really relevant
         # --------------------------------------------------
-      if "w/v trop" in full_lower:
-    trop_line = None
-    for line in lines:
-        if "W/V TROP" in line or "w/v trop" in line.lower():
-            trop_line = line.strip()
-            break
+        if "w/v trop" in full_lower:
+            trop_line = None
+            for line in lines:
+                if "W/V TROP" in line or "w/v trop" in line.lower():
+                    trop_line = line.strip()
+                    break
 
-    if trop_line and re.search(r"\b390\b|\b400\b", text):
-        raw_threats.append(
-            Threat(
-                priority="P2",
-                category="MET",
-                title="Tropopause proximity / CAT awareness",
-                source_section="Operational Flight Plan",
-                highlight_text=trop_line,
-                why_it_matters="Nível de voo próximo da tropopause pode aumentar o risco de clear air turbulence.",
-                expected_crew_action="Antecipar possível CAT e gerir awareness de cabine e seat belts.",
-                affected_phase="Enroute",
-                affected_area="Cruise",
-                page_number=pnum,
-            )
-        ),
-                    why_it_matters="Nível de voo próximo da tropopause pode aumentar o risco de clear air turbulence.",
-                    expected_crew_action="Antecipar possível CAT e gerir awareness de cabine e seat belts.",
-                    affected_phase="Enroute",
-                    affected_area="Cruise",
-                    page_number=pnum,
+            if trop_line and re.search(r"\b390\b|\b400\b", text):
+                raw_threats.append(
+                    Threat(
+                        priority="P2",
+                        category="MET",
+                        title="Tropopause proximity / CAT awareness",
+                        source_section="Operational Flight Plan",
+                        highlight_text=trop_line,
+                        why_it_matters="Nível de voo próximo da tropopause pode aumentar o risco de clear air turbulence.",
+                        expected_crew_action="Antecipar possível CAT e gerir awareness de cabine e seat belts.",
+                        affected_phase="Enroute",
+                        affected_area="Cruise",
+                        page_number=pnum,
+                    )
                 )
-            )
 
     # --------------------------------------------------
     # Deduplicate / consolidate
     # --------------------------------------------------
     grouped: dict[tuple[str, str, str, str], list[Threat]] = defaultdict(list)
-    for t in raw_threats:
-        key = _make_key(t.priority, t.category, t.title, t.affected_area)
-        grouped[key].append(t)
+    for threat in raw_threats:
+        key = _make_key(threat.priority, threat.category, threat.title, threat.affected_area)
+        grouped[key].append(threat)
 
     final_threats: list[Threat] = []
     for _, group in grouped.items():
-        group = sorted(group, key=lambda x: x.page_number)
+        group = sorted(group, key=lambda t: t.page_number)
         first = group[0]
 
-        # consolidate highlight texts
         highlights = []
         seen_h = set()
-        for g in group:
-            norm = _normalize_text(g.highlight_text)
+        for item in group:
+            norm = _normalize_text(item.highlight_text)
             if norm not in seen_h:
                 seen_h.add(norm)
-                highlights.append(g.highlight_text)
+                highlights.append(item.highlight_text)
 
         merged_highlight = " | ".join(highlights[:3])
 
