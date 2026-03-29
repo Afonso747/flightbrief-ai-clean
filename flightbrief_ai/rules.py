@@ -265,18 +265,28 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
         # Tropopause proximity
         # Consolidate later, but don't create on every page unless really relevant
         # --------------------------------------------------
-        if (
-            re.search(r"\bfl390\b|\b390\b", full_lower)
-            and re.search(r"\b39\b|\b40\b", text)
-            and ("trop" in full_lower or "tropopause" in full_lower or "w/v trop" in full_lower)
-        ):
-            raw_threats.append(
-                Threat(
-                    priority="P2",
-                    category="MET",
-                    title="Tropopause proximity / CAT awareness",
-                    source_section="Operational Flight Plan",
-                    highlight_text="Tropopause/FL proximity requires CAT awareness",
+      if "w/v trop" in full_lower:
+    trop_line = None
+    for line in lines:
+        if "W/V TROP" in line or "w/v trop" in line.lower():
+            trop_line = line.strip()
+            break
+
+    if trop_line and re.search(r"\b390\b|\b400\b", text):
+        raw_threats.append(
+            Threat(
+                priority="P2",
+                category="MET",
+                title="Tropopause proximity / CAT awareness",
+                source_section="Operational Flight Plan",
+                highlight_text=trop_line,
+                why_it_matters="Nível de voo próximo da tropopause pode aumentar o risco de clear air turbulence.",
+                expected_crew_action="Antecipar possível CAT e gerir awareness de cabine e seat belts.",
+                affected_phase="Enroute",
+                affected_area="Cruise",
+                page_number=pnum,
+            )
+        ),
                     why_it_matters="Nível de voo próximo da tropopause pode aumentar o risco de clear air turbulence.",
                     expected_crew_action="Antecipar possível CAT e gerir awareness de cabine e seat belts.",
                     affected_phase="Enroute",
