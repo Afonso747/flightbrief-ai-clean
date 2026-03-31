@@ -729,19 +729,35 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                     )
                 )
 
-        # Oceanic / ETOPS awareness
-        if any(tok in full_lower for tok in ["entry1", "etp1", "exit1", "oceanic clearance", "39n060w", "40n050w", "41n040w", "42n030w"]):
+               # Oceanic procedures awareness
+        oceanic_patterns = [
+            r"\b\d{2}N\d{3}W\b",           # ex: 40N020W, 42N040W
+            r"\bsanta maria oceanic\b",
+            r"\bshanwick oceanic\b",
+            r"\bnew york oceanic\b",
+            r"\boceanic clearance\b",
+            r"\bt9\b",
+        ]
+
+        oceanic_match = None
+        for pat in oceanic_patterns:
+            m = re.search(pat, text, re.IGNORECASE)
+            if m:
+                oceanic_match = m.group(0)
+                break
+
+        if oceanic_match:
             raw_threats.append(
                 Threat(
                     priority="P3",
-                    category="ALT_ETOPS",
-                    title="ETOPS / en-route alternate awareness",
-                    source_section="ETOPS Summary / ATC Flight Plan",
-                    highlight_text="OCEANIC CLEARANCE" if "oceanic clearance" in full_lower else "ETOPS ENTRY1",
-                    why_it_matters="A estrutura de entry/ETP/exit e a complexidade oceânica devem entrar no briefing como awareness.",
-                    expected_crew_action="Brief curto sobre alternantes en-route, ETP, random waypoints e lógica de desvio.",
+                    category="OCEANIC",
+                    title="Oceanic procedures",
+                    source_section="ATC Flight Plan / Operational Flight Plan",
+                    highlight_text=oceanic_match.upper(),
+                    why_it_matters="Complexidade de procedimentos oceanicos pode aumentar workload",
+                    expected_crew_action="Rever procedimentos locais aplicáveis e de contigencia em ambiente oceanico",
                     affected_phase="Enroute",
-                    affected_area="North Atlantic",
+                    affected_area="Oceanic",
                     page_number=pnum,
                 )
             )
