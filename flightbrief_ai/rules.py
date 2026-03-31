@@ -15,39 +15,155 @@ NEGATIVE_PATTERNS = [
     r"\bNO WX DATA AVAILABLE\b",
 ]
 
+# Lista fechada da companhia (normalizada e sem duplicados)
 RELEVANT_AIRPORTS = {
-    "KIAD", "LPPT", "LPLA", "KBGR", "LEMD", "LEMG", "LPFR", "LPPR",
-    "LPPD", "LPAZ", "KBWI", "KPHL", "KEWR", "KRDU", "TXKF", "CYHZ", "CYQX",
-    "FNLU", "DGAA", "DAAT"
+    "KLAX", "KSFO", "KLAS", "KSAN", "KOAK", "KSLC", "KDEN", "KORD", "KMKE",
+    "KDTW", "KRDU", "KIAD", "KPHL", "KEWR", "KJFK", "KMIA", "KBOS", "KFLL",
+    "TXKF", "KPSM", "KBGR", "CYHZ", "CYJT", "CYYT", "CYQX", "CYUL", "CYOW",
+    "CYYR", "MMUN", "SVMC", "SVMU", "SOCA", "SBBE", "SGSL", "SBFZ", "SBSG",
+    "SBRF", "SBSV", "SBBR", "SBCF", "SBGL", "SBGR", "SBCT", "SBFL", "SBPA",
+    "GVAC", "GOBD", "DGAA", "DXXX", "DIAP", "FKKD", "FOOL", "FNLU", "FNBJ",
+    "FQMA", "DNKN", "GQNO", "GMML", "GCTS", "GCXO", "GCLP", "GMAD", "GMMN",
+    "LPFR", "LPMA", "LPPS", "LPPT", "LEMD", "LEZL", "LEMG", "LEVC", "LEBL",
+    "DAAG", "DAAT", "LEPA", "LFBO", "LFPO", "LFPG", "LFBD", "LFRS", "LIRF",
+    "LIRA", "LIRN", "LFQQ", "EBBR", "ELLX", "EHAM", "EDDF", "EDDM", "EDDH",
+    "EDDB", "LIMC", "LSZH", "LSGG", "LOWW", "LKPR", "EPWA", "LHBP", "LGAV",
+    "LLBG", "LCLK", "EKCH", "ESSA", "ENGM", "EGLL", "EGKK", "EINN", "EIDW",
+    "LPPD", "LPLA", "LPAZ",
 }
 
+# Subconjunto tratado como alternates / diversion-like por defeito
 ALTERNATE_LIKE_AIRPORTS = {
-    "LPLA", "LPPR", "LPFR", "LPPD", "LPAZ", "CYHZ", "CYQX", "TXKF",
-    "LEMD", "LEMG", "KBGR", "DGAA", "DAAT"
+    "TXKF", "KBGR", "CYHZ", "CYJT", "CYYT", "CYQX", "CYUL", "CYOW", "CYYR",
+    "LPPD", "LPLA", "LPAZ", "LPFR", "LPMA", "LPPS", "LEMD", "LEZL", "LEMG",
+    "LEVC", "LEBL", "LEPA", "GVAC", "GOBD", "DGAA", "DXXX", "DIAP", "FKKD",
+    "FOOL", "FNLU", "FNBJ", "FQMA", "DNKN", "GQNO", "GMML", "GCTS", "GCXO",
+    "GCLP", "GMAD", "GMMN", "DAAG", "DAAT", "LFBO", "LFPO", "LFPG", "LFBD",
+    "LFRS", "LIRF", "LIRA", "LIRN", "LFQQ", "EBBR", "ELLX", "EHAM", "EDDF",
+    "EDDM", "EDDH", "EDDB", "LIMC", "LSZH", "LSGG", "LOWW", "LKPR", "EPWA",
+    "LHBP", "LGAV", "LLBG", "LCLK", "EKCH", "ESSA", "ENGM", "EGLL", "EGKK",
+    "EINN", "EIDW", "KRDU", "KPHL", "KEWR", "KJFK", "KMIA", "KBOS", "KFLL",
+    "KPSM", "KMKE", "KDTW", "KORD", "KDEN", "KSLC", "KOAK", "KSAN", "KLAS",
+    "KSFO", "KLAX", "MMUN", "SVMC", "SVMU", "SOCA", "SBBE", "SGSL", "SBFZ",
+    "SBSG", "SBRF", "SBSV", "SBBR", "SBCF", "SBGL", "SBGR", "SBCT", "SBFL",
+    "SBPA",
 }
 
-# Static airport coordinates (good enough for the prototype)
+# Coordenadas dos aeroportos mais relevantes para esta fase do protótipo.
+# Se um aeroporto não estiver aqui, o motor ignora a triangulação desse aeroporto
+# e cai para as regras de departure/destination/ETOPS quando aplicável.
 AIRPORT_COORDS = {
+    "KLAX": (33.9425, -118.4081),
+    "KSFO": (37.6188, -122.3754),
+    "KLAS": (36.0801, -115.1522),
+    "KSAN": (32.7338, -117.1933),
+    "KOAK": (37.7213, -122.2210),
+    "KSLC": (40.7899, -111.9791),
+    "KDEN": (39.8561, -104.6737),
+    "KORD": (41.9742, -87.9073),
+    "KMKE": (42.9472, -87.8966),
+    "KDTW": (42.2124, -83.3534),
+    "KRDU": (35.8776, -78.7875),
     "KIAD": (38.9445, -77.4558),
-    "LPPT": (38.7742, -9.1342),
-    "LPLA": (38.7618, -27.0908),
-    "KBGR": (44.8074, -68.8281),
-    "LEMD": (40.4722, -3.5608),
-    "LEMG": (36.6749, -4.4991),
-    "LPFR": (37.0144, -7.9659),
-    "LPPR": (41.2421, -8.6781),
-    "LPPD": (37.7412, -25.6979),
-    "LPAZ": (36.9714, -25.1706),
-    "KBWI": (39.1754, -76.6684),
     "KPHL": (39.8744, -75.2424),
     "KEWR": (40.6895, -74.1745),
-    "KRDU": (35.8776, -78.7875),
+    "KJFK": (40.6413, -73.7781),
+    "KMIA": (25.7959, -80.2870),
+    "KBOS": (42.3656, -71.0096),
+    "KFLL": (26.0726, -80.1527),
     "TXKF": (32.3639, -64.6787),
+    "KPSM": (43.0781, -70.8233),
+    "KBGR": (44.8074, -68.8281),
     "CYHZ": (44.8808, -63.5086),
+    "CYJT": (48.5442, -58.5499),
+    "CYYT": (47.6186, -52.7519),
     "CYQX": (48.9369, -54.5681),
-    "FNLU": (-8.8584, 13.2312),
+    "CYUL": (45.4706, -73.7408),
+    "CYOW": (45.3225, -75.6692),
+    "CYYR": (53.3192, -60.4258),
+    "MMUN": (21.0365, -86.8771),
+    "SVMC": (10.5582, -63.9816),
+    "SVMU": (10.9126, -63.9666),
+    "SOCA": (4.8198, -52.3604),
+    "SBBE": (-1.3793, -48.4763),
+    "SGSL": (-2.5854, -44.2341),
+    "SBFZ": (-3.7763, -38.5326),
+    "SBSG": (-5.7681, -35.3761),
+    "SBRF": (-8.1265, -34.9236),
+    "SBSV": (-12.9086, -38.3225),
+    "SBBR": (-15.8692, -47.9208),
+    "SBCF": (-19.6244, -43.9719),
+    "SBGL": (-22.8090, -43.2506),
+    "SBGR": (-23.4356, -46.4731),
+    "SBCT": (-25.5285, -49.1758),
+    "SBFL": (-27.6703, -48.5525),
+    "SBPA": (-29.9944, -51.1714),
+    "GVAC": (14.9245, -23.4935),
+    "GOBD": (14.6708, -17.0733),
     "DGAA": (5.6052, -0.1668),
+    "DXXX": (6.1656, 1.2545),
+    "DIAP": (5.2614, -3.9263),
+    "FKKD": (4.0061, 9.7195),
+    "FOOL": (0.4586, 9.4123),
+    "FNLU": (-8.8584, 13.2312),
+    "FNBJ": (-12.6090, 13.4037),
+    "FQMA": (-25.9208, 32.5726),
+    "DNKN": (12.0476, 8.5246),
+    "GQNO": (18.0982, -15.9479),
+    "GMML": (33.3675, -7.5899),
+    "GCTS": (28.0445, -16.5725),
+    "GCXO": (28.4827, -16.3415),
+    "GCLP": (27.9319, -15.3866),
+    "GMAD": (30.3250, -9.4131),
+    "GMMN": (33.5613, -7.6608),
+    "LPFR": (37.0144, -7.9659),
+    "LPMA": (32.6979, -16.7745),
+    "LPPS": (33.0734, -16.3500),
+    "LPPT": (38.7742, -9.1342),
+    "LPPD": (37.7412, -25.6979),
+    "LPLA": (38.7618, -27.0908),
+    "LPAZ": (36.9714, -25.1706),
+    "LEMD": (40.4722, -3.5608),
+    "LEZL": (37.4180, -5.8931),
+    "LEMG": (36.6749, -4.4991),
+    "LEVC": (39.4893, -0.4816),
+    "LEBL": (41.2971, 2.0785),
+    "DAAG": (36.6910, 3.2154),
     "DAAT": (22.8115, 5.4511),
+    "LEPA": (39.5517, 2.7388),
+    "LFBO": (43.6293, 1.3630),
+    "LFPO": (48.7262, 2.3652),
+    "LFPG": (49.0097, 2.5479),
+    "LFBD": (44.8283, -0.7156),
+    "LFRS": (47.1532, -1.6107),
+    "LIRF": (41.8003, 12.2389),
+    "LIRA": (41.6545, 12.4452),
+    "LIRN": (40.8860, 14.2908),
+    "LFQQ": (50.5633, 3.0872),
+    "EBBR": (50.9010, 4.4844),
+    "ELLX": (49.6233, 6.2044),
+    "EHAM": (52.3105, 4.7683),
+    "EDDF": (50.0379, 8.5622),
+    "EDDM": (48.3538, 11.7861),
+    "EDDH": (53.6304, 9.9882),
+    "EDDB": (52.3667, 13.5033),
+    "LIMC": (45.6301, 8.7231),
+    "LSZH": (47.4582, 8.5555),
+    "LSGG": (46.2381, 6.1089),
+    "LOWW": (48.1103, 16.5697),
+    "LKPR": (50.1008, 14.2600),
+    "EPWA": (52.1657, 20.9671),
+    "LHBP": (47.4369, 19.2556),
+    "LGAV": (37.9364, 23.9475),
+    "LLBG": (32.0114, 34.8867),
+    "LCLK": (34.8751, 33.6249),
+    "EKCH": (55.6181, 12.6561),
+    "ESSA": (59.6519, 17.9186),
+    "ENGM": (60.1939, 11.1004),
+    "EGLL": (51.4700, -0.4543),
+    "EGKK": (51.1537, -0.1821),
+    "EINN": (52.7020, -8.9248),
+    "EIDW": (53.4213, -6.2701),
 }
 
 
@@ -120,7 +236,7 @@ def _extract_route_context(pages: list[dict]) -> dict:
     if etd is not None and eta is not None and eta < etd:
         eta += 24 * 60
 
-    # ETOPS/enroute suitability windows
+    # WEATHER SUITABILITY PERIOD / ETOPS windows
     for ap, start_hh, start_mm, end_hh, end_mm in re.findall(
         r"\b([A-Z]{4})\s+(\d{2}):(\d{2})\s+(\d{2}):(\d{2})\b",
         joined,
@@ -146,11 +262,6 @@ def _extract_route_context(pages: list[dict]) -> dict:
 
 
 def _parse_latlon_compact(value: str) -> float:
-    """
-    Examples:
-      N3905.3 -> 39 + 5.3/60
-      W07459.6 -> -(74 + 59.6/60)
-    """
     hemi = value[0]
     body = value[1:]
 
@@ -180,20 +291,68 @@ def _haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return km * 0.539957
 
 
+def _to_cartesian(lat: float, lon: float) -> tuple[float, float, float]:
+    lat_r = math.radians(lat)
+    lon_r = math.radians(lon)
+    x = math.cos(lat_r) * math.cos(lon_r)
+    y = math.cos(lat_r) * math.sin(lon_r)
+    z = math.sin(lat_r)
+    return (x, y, z)
+
+
+def _nearest_time_on_segment(
+    ap_lat: float,
+    ap_lon: float,
+    p1: dict,
+    p2: dict,
+) -> tuple[float, float]:
+    """
+    Approximate nearest point on segment using 3D cartesian interpolation.
+    Returns:
+      (distance_nm, interpolated_time_minutes)
+    """
+    a = _to_cartesian(p1["lat"], p1["lon"])
+    b = _to_cartesian(p2["lat"], p2["lon"])
+    p = _to_cartesian(ap_lat, ap_lon)
+
+    ab = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+    ap = (p[0] - a[0], p[1] - a[1], p[2] - a[2])
+
+    ab2 = ab[0] ** 2 + ab[1] ** 2 + ab[2] ** 2
+    if ab2 == 0:
+        dist = _haversine_nm(ap_lat, ap_lon, p1["lat"], p1["lon"])
+        return dist, p1["time"]
+
+    t = (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / ab2
+    t = max(0.0, min(1.0, t))
+
+    x = a[0] + t * ab[0]
+    y = a[1] + t * ab[1]
+    z = a[2] + t * ab[2]
+
+    norm = math.sqrt(x * x + y * y + z * z)
+    if norm == 0:
+        dist = _haversine_nm(ap_lat, ap_lon, p1["lat"], p1["lon"])
+        return dist, p1["time"]
+
+    x /= norm
+    y /= norm
+    z /= norm
+
+    lat = math.degrees(math.asin(z))
+    lon = math.degrees(math.atan2(y, x))
+
+    dist = _haversine_nm(ap_lat, ap_lon, lat, lon)
+    time_interp = p1["time"] + t * (p2["time"] - p1["time"])
+    return dist, time_interp
+
+
 def _parse_route_times(pages: list[dict]) -> dict[str, int]:
-    """
-    Parse TOT times from OFP route pages.
-    Returns point_name -> minutes from midnight UTC.
-    """
     point_times: dict[str, int] = {}
 
     for page in pages:
-        text = page["text"]
-        lines = _lines(text)
+        lines = _lines(page["text"])
         for line in lines:
-            # Example:
-            # ENTRY1 | 23 548 | |25/099 27|0143| | | |
-            # 4050N | 6 548 | 350 |25/099 39|0232| | | |
             m = re.match(r"^([A-Z0-9-]+)\s*\|.*\|(\d{4})\|(?:\s*\|\s*)*$", line)
             if m:
                 point = m.group(1).strip()
@@ -201,7 +360,6 @@ def _parse_route_times(pages: list[dict]) -> dict[str, int]:
                 point_times[point] = _hhmm_to_minutes(tot)
                 continue
 
-            # More permissive fallback
             m = re.match(r"^([A-Z0-9-]+)\s*\|.*\|(\d{4})\|", line)
             if m:
                 point = m.group(1).strip()
@@ -212,11 +370,6 @@ def _parse_route_times(pages: list[dict]) -> dict[str, int]:
 
 
 def _parse_route_coords(pages: list[dict]) -> dict[str, tuple[float, float]]:
-    """
-    Parse waypoint coordinates from upper wind pages:
-      TOC |N3905.3 |
-      |W07459.6 |
-    """
     route_coords: dict[str, tuple[float, float]] = {}
 
     for page in pages:
@@ -251,16 +404,16 @@ def _build_route_points_with_time_and_coords(pages: list[dict], etd: int | None)
         if point not in point_times:
             continue
 
-        tot_abs = point_times[point]
-        if etd is not None and tot_abs < etd - 12 * 60:
-            tot_abs += 24 * 60
+        abs_time = point_times[point]
+        if etd is not None and abs_time < etd - 12 * 60:
+            abs_time += 24 * 60
 
         route_points.append(
             {
                 "point": point,
                 "lat": lat,
                 "lon": lon,
-                "time": tot_abs,
+                "time": abs_time,
             }
         )
 
@@ -335,15 +488,23 @@ def _get_airport_reference_time(airport: str, ctx: dict) -> int | None:
 
     if airport in etops_windows:
         start, end = etops_windows[airport]
-        return (start + end) // 2
+        return int((start + end) / 2)
 
-    if airport in AIRPORT_COORDS and route_points:
+    if airport in AIRPORT_COORDS and len(route_points) >= 2:
         ap_lat, ap_lon = AIRPORT_COORDS[airport]
-        best = min(
-            route_points,
-            key=lambda rp: _haversine_nm(ap_lat, ap_lon, rp["lat"], rp["lon"]),
-        )
-        return best["time"]
+        best_dist = float("inf")
+        best_time = None
+
+        for i in range(len(route_points) - 1):
+            p1 = route_points[i]
+            p2 = route_points[i + 1]
+            dist, t = _nearest_time_on_segment(ap_lat, ap_lon, p1, p2)
+            if dist < best_dist:
+                best_dist = dist
+                best_time = int(round(t))
+
+        if best_time is not None:
+            return best_time
 
     if airport in ALTERNATE_LIKE_AIRPORTS:
         return eta
@@ -356,8 +517,6 @@ def _get_airport_applicability_window(airport: str, ctx: dict) -> tuple[int | No
     if ref_time is None:
         return None, None
 
-    etd = ctx["etd"]
-    eta = ctx["eta"]
     departure = ctx["departure"]
     destination = ctx["destination"]
 
@@ -367,7 +526,6 @@ def _get_airport_applicability_window(airport: str, ctx: dict) -> tuple[int | No
     if airport == destination:
         return max(0, ref_time - 60), ref_time + 120
 
-    # enroute / ETOPS / alternate relevant airports
     return max(0, ref_time - 60), ref_time + 60
 
 
@@ -443,6 +601,9 @@ def _extract_weather_threats_from_airport_block(
 ) -> list[Threat]:
     threats: list[Threat] = []
 
+    if airport not in RELEVANT_AIRPORTS and airport not in {ctx.get("departure"), ctx.get("destination")} and airport not in ctx.get("etops_windows", {}):
+        return threats
+
     app_start, app_end = _get_airport_applicability_window(airport, ctx)
     if app_start is None or app_end is None:
         return threats
@@ -457,7 +618,6 @@ def _extract_weather_threats_from_airport_block(
 
         start, end = _parse_taf_group_window(line)
 
-        # Only explicit timed groups or SA
         if start is None or end is None:
             if line.startswith("SA "):
                 start, end = app_start, app_end
@@ -533,7 +693,7 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                 )
             )
 
-        # Callsign
+        # Callsign with appended letter
         m = re.search(r"\(FPL-([A-Z]+\d+[A-Z])-IS", text)
         if m:
             callsign = m.group(1)
@@ -570,7 +730,7 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                 )
             )
 
-        # Weather List v5 parser
+        # Weather List v6 parser
         if "airport weather list" in full_lower or "destination:" in full_lower or "departure:" in full_lower:
             airport_blocks = _build_airport_weather_blocks(lines)
             for airport, airport_lines in airport_blocks.items():
@@ -608,7 +768,7 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                     )
                 )
 
-        # NOTAM runway / procedure / navaid
+        # Runway / procedure / navaid limitation
         for line in lines:
             if _is_negative_line(line):
                 continue
