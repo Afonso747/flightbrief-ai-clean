@@ -684,6 +684,7 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
         lines = list(_lines(text))
         full_lower = text.lower()
 
+        # MEL / CDL
         mel_lines = []
         if "mel/cdl description" in full_lower or "addt fuel due to mel" in full_lower:
             for line in lines:
@@ -708,6 +709,7 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                 )
             )
 
+        # Callsign
         m = re.search(r"\(FPL-([A-Z]+\d+[A-Z])-IS", text)
         if m:
             callsign = m.group(1)
@@ -727,6 +729,7 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                     )
                 )
 
+        # Oceanic / ETOPS awareness
         if any(tok in full_lower for tok in ["entry1", "etp1", "exit1", "oceanic clearance", "39n060w", "40n050w", "41n040w", "42n030w"]):
             raw_threats.append(
                 Threat(
@@ -743,11 +746,13 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                 )
             )
 
+        # Weather
         if "airport weather list" in full_lower or "destination:" in full_lower or "departure:" in full_lower:
             airport_blocks = _build_airport_weather_blocks(lines)
             for airport, airport_lines in airport_blocks.items():
                 raw_threats.extend(_extract_weather_threats_from_airport_block(airport, airport_lines, pnum, ctx))
 
+        # Navigation / RAIM / GNSS
         for line in lines:
             if _is_negative_line(line):
                 continue
@@ -756,6 +761,8 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
             if (
                 ("gnss" in lower or "interference" in lower or "rnp10" in lower or "raim" in lower)
                 and not re.search(r"\bno raim outages\b|\bno outages\b", lower)
+                and re.search(r"\boutage\b|\bunavailable\b|\bmisleading\b|\bdegrad|\baffected\b|\binterference reported\b", lower)
+                and "for frequently updated information" not in lower
             ):
                 raw_threats.append(
                     Threat(
@@ -772,6 +779,7 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                     )
                 )
 
+        # NOTAM runway / procedure / navaid
         for line in lines:
             if _is_negative_line(line):
                 continue
@@ -800,6 +808,23 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                     )
                 )
 
+    # Remove Weather awareness when same airport already has Marginal weather
+    filtered_raw_threats: list[Threat] = []
+
+    airports_with_marginal = {
+        t.affected_area
+        for t in raw_threats
+        if t.title == "Marginal weather" and t.affected_area != "General"
+    }
+
+    for t in raw_threats:
+        if t.title == "Weather awareness" and t.affected_area in airports_with_marginal:
+            continue
+        filtered_raw_threats.append(t)
+
+    raw_threats = filtered_raw_threats
+
+    # Deduplicate / consolidate
     grouped: dict[tuple[str, str, str, str], list[Threat]] = defaultdict(list)
     for threat in raw_threats:
         key = _make_key(threat.priority, threat.category, threat.title, threat.affected_area)
