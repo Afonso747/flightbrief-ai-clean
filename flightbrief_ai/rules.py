@@ -435,6 +435,97 @@ def _extract_rffs_category(text: str) -> int | None:
     return None
 
 
+def _extract_route_level_changes_from_fpl(pages: list[dict]) -> dict[str, int]:
+    joined = "\n".join(page["text"] for page in pages[:20])
+    result: dict[str, int] = {}
+
+    # named waypoint / level
+    for point, fl in re.findall(r"\b([A-Z0-9]{2,})/(?:N\d{4}|M\d{3})F(\d{3})\b", joined):
+        result[point] = int(fl)
+
+    # initial level after departure
+    m = re.search(r"-[A-Z]{4}/\d+\s+(?:N\d{4}|M\d{3})F(\d{3})\b", joined)
+    if m:
+        result["INITIAL"] = int(m.group(1))
+
+    return result
+
+
+def _extract_tropopause_cat_candidates(pages: list[dict]) -> list[dict]:
+    candidates: list[dict] = []
+
+    for page in pages:
+        lines = _lines(page["text"])
+        for line in lines:
+            # Example:
+            # ODEGI | 114 464 815| 400 |27/021 45|0545|
+            m = re.match(
+                r"^([A-Z0-9/]+)\s*\|[^|]*\|\s*(CLB|DSC|\d{3})\s*\|[^|]*\s+(\d{2})\|\s*(\d{4})\|",
+                line
+            )
+            if not m:
+                continue
+
+            point = m.group(1).strip()
+            afl_txt = m.group(2).strip()
+            trop_txt = m.group(3).strip()
+            tot_txt = m.group(4).strip()
+
+            if afl_txt in {"CLB", "DSC"}:
+                continue
+
+            afl = int(afl_txt)
+            trop = int(trop_txt)
+            tot = _hhmm_to_minutes(tot_txt)
+
+            candidates.append(
+                {
+                    "point": point,
+                    "afl": afl,
+                    "trop": trop,
+                    "tot": tot,
+                    "line": line,
+                    "page_number": page["page_number"],
+                }
+            )
+
+    return candidates
+
+
+def _detect_cat_tropopause_threats(pages: list[dict], ctx: dict) -> list[Threat]:
+    threats: list[Threat] = []
+    seen_points: set[str] = set()
+
+    candidates = _extract_tropopause_cat_candidates(pages)
+
+    for c in candidates:
+        point = c["point"]
+        afl = c["afl"]
+        trop = c["trop"]
+
+        if abs(afl - trop) <= 5:
+            if point in seen_points:
+                continue
+            seen_points.add(point)
+
+            threats.append(
+                Threat(
+                    priority="P2",
+                    category="TURB",
+                    title="Clear air turbulence expected",
+                    source_section="Operational Flight Plan",
+                    highlight_text=f"{point} | FL{afl} | TROP FL{trop} | TOT {c['tot']:04d}",
+                    why_it_matters="Proximidade da aeronave à altitude da tropopausa pode aumentar probabilidade de clear air turbulence.",
+                    expected_crew_action="Rever seat belt strategy e antecipar possível ride deterioration.",
+                    affected_phase="Enroute",
+                    affected_area=point,
+                    page_number=c["page_number"],
+                )
+            )
+
+    return threats
+
+
 def _detect_weather_line_type(line: str) -> str:
     stripped = line.strip()
     if stripped.startswith("SA "):
@@ -915,6 +1006,9 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
     raw_threats: list[Threat] = []
     ctx = _extract_route_context(pages)
     ctx["route_points"] = _build_route_points_with_time_and_coords(pages, ctx["etd"])
+
+    # CAT near tropopause
+    raw_threats.extend(_detect_cat_tropopause_threats(pages, ctx))
 
     for page in pages:
         pnum = page["page_number"]
