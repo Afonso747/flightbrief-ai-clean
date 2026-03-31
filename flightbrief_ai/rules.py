@@ -344,6 +344,40 @@ def _parse_metar_time(line: str, brief_day: int | None) -> tuple[int | None, int
     return obs_time - 60, obs_time + 60
 
 
+def _parse_notam_validity_window(line: str, brief_day: int | None) -> tuple[int | None, int | None]:
+    if brief_day is None:
+        return None, None
+
+    def ddhhmm_to_abs_minutes(ddhhmm: str) -> int:
+        day = int(ddhhmm[:2])
+        hour = int(ddhhmm[2:4])
+        minute = int(ddhhmm[4:6])
+        day_offset = day - brief_day
+        if day_offset < 0:
+            day_offset += 31
+        return day_offset * 24 * 60 + hour * 60 + minute
+
+    m = re.search(r"\bB\)\s*\d{2}(\d{6})\s+C\)\s*\d{2}(\d{6})\b", line)
+    if m:
+        return ddhhmm_to_abs_minutes(m.group(1)), ddhhmm_to_abs_minutes(m.group(2))
+
+    m = re.search(r"\b(\d{6})\s*-\s*(\d{6})\b", line)
+    if m:
+        return ddhhmm_to_abs_minutes(m.group(1)), ddhhmm_to_abs_minutes(m.group(2))
+
+    return None, None
+
+
+def _is_runway_closed_notam(line: str) -> bool:
+    lower = line.lower()
+    return bool(
+        re.search(r"\brwy\b.*\bclsd\b", lower)
+        or re.search(r"\brwy\b.*\bclosed\b", lower)
+        or re.search(r"\brunway\b.*\bclosed\b", lower)
+        or re.search(r"\brunway\b.*\bclsd\b", lower)
+    )
+
+
 def _detect_weather_line_type(line: str) -> str:
     stripped = line.strip()
     if stripped.startswith("SA "):
@@ -749,7 +783,6 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                     )
                 )
 
-        # Oceanic procedures awareness
         oceanic_patterns = [
             r"\b\d{2}N\d{3}W\b",
             r"\bsanta maria oceanic\b",
@@ -821,12 +854,44 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
 
             lower = line.lower()
             airports_in_line = re.findall(r"\b[A-Z]{4}\b", line)
-            relevant_here = any(ap in RELEVANT_AIRPORTS for ap in airports_in_line)
+            relevant_airports_in_line = [ap for ap in airports_in_line if ap in RELEVANT_AIRPORTS]
+
+            if not relevant_airports_in_line:
+                continue
+
+            airport = relevant_airports_in_line[0]
+
+            if _is_runway_closed_notam(line):
+                app_start, app_end = _get_airport_applicability_window(airport, ctx)
+                if app_start is None or app_end is None:
+                    continue
+
+                notam_start, notam_end = _parse_notam_validity_window(line, ctx.get("brief_day"))
+
+                if notam_start is not None and notam_end is not None:
+                    notam_start, notam_end = _align_window_to_reference(notam_start, notam_end, app_start)
+                    if not _time_overlap_minutes(notam_start, notam_end, app_start, app_end):
+                        continue
+
+                raw_threats.append(
+                    Threat(
+                        priority="P2",
+                        category="NOTAM_ADX",
+                        title="Runway closed",
+                        source_section="NOTAM Information",
+                        highlight_text=line,
+                        why_it_matters="Fecho de pista num aeroporto relevante dentro da janela temporal aplicável pode afetar arrival, departure ou diversion planning.",
+                        expected_crew_action="Confirmar indisponibilidade da pista e rever impacto operacional e procedimentos disponíveis.",
+                        affected_phase="General",
+                        affected_area=airport,
+                        page_number=pnum,
+                    )
+                )
+                continue
 
             if (
                 re.search(r"closed|closure|canceled|cancelled|u/s|unserviceable", lower)
-                and any(x in lower for x in ["runway", "rwy", "taxiway", "vor", "ils", "procedure", "dme", "light"])
-                and relevant_here
+                and any(x in lower for x in ["taxiway", "vor", "ils", "procedure", "dme", "light"])
             ):
                 raw_threats.append(
                     Threat(
@@ -838,7 +903,7 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                         why_it_matters="Uma limitação de pista, procedimento ou ajuda rádio pode ser operacionalmente relevante para departure/arrival/diversion.",
                         expected_crew_action="Confirmar procedimento disponível e ajustar o briefing se aplicável.",
                         affected_phase="General",
-                        affected_area=airports_in_line[0] if airports_in_line else "General",
+                        affected_area=airport,
                         page_number=pnum,
                     )
                 )
