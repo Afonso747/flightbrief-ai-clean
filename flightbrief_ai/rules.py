@@ -174,6 +174,8 @@ def _extract_route_context(pages: list[dict]) -> dict:
 
         etops_windows[ap] = (start, end)
 
+    aircraft_type = _extract_aircraft_type(pages)
+
     return {
         "etd": etd,
         "eta": eta,
@@ -181,8 +183,8 @@ def _extract_route_context(pages: list[dict]) -> dict:
         "destination": destination,
         "etops_windows": etops_windows,
         "brief_day": _extract_brief_date_day(pages),
-        "aircraft_type": _extract_aircraft_type(pages),
-        "required_rffs": _required_rffs_category(_extract_aircraft_type(pages)),
+        "aircraft_type": aircraft_type,
+        "required_rffs": _required_rffs_category(aircraft_type),
     }
 
 
@@ -412,33 +414,19 @@ def _parse_notam_time_fragment(text: str, brief_day: int | None) -> tuple[int | 
     if m:
         return ddhhmm_to_abs_minutes(m.group(1)), ddhhmm_to_abs_minutes(m.group(2))
 
-    # simple hourly window like 0000-0600 on same day / next day inference
     m = re.search(r"\b(\d{4})-(\d{4})\b", text)
     if m:
-        start_hhmm = m.group(1)
-        end_hhmm = m.group(2)
-        start = _hhmm_to_minutes(start_hhmm)
-        end = _hhmm_to_minutes(end_hhmm)
+        start = _hhmm_to_minutes(m.group(1))
+        end = _hhmm_to_minutes(m.group(2))
         return start, end
 
     return None, None
-
-
-def _is_runway_closed_notam(text: str) -> bool:
-    lower = text.lower()
-    return bool(
-        re.search(r"\brwy\b.*\bclsd\b", lower)
-        or re.search(r"\brwy\b.*\bclosed\b", lower)
-        or re.search(r"\brunway\b.*\bclosed\b", lower)
-        or re.search(r"\brunway\b.*\bclsd\b", lower)
-    )
 
 
 def _extract_rffs_category(text: str) -> int | None:
     patterns = [
         r"\brffs\s*cat(?:egory)?\s*(\d+)\b",
         r"\bfire\s*cat(?:egory)?\s*(\d+)\b",
-        r"\bcat\s*(\d+)\b",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
@@ -890,6 +878,39 @@ def _extract_notam_blocks(lines: list[str]) -> list[dict]:
     return blocks
 
 
+def _find_runway_closed_line(lines: list[str]) -> str | None:
+    patterns = [
+        r"\bRWY\b.*\bCLSD\b",
+        r"\bRWY\b.*\bCLOSED\b",
+        r"\bRUNWAY\b.*\bCLSD\b",
+        r"\bRUNWAY\b.*\bCLOSED\b",
+    ]
+    for line in lines:
+        for pat in patterns:
+            if re.search(pat, line, re.IGNORECASE):
+                return line
+    return None
+
+
+def _find_notam_time_line(lines: list[str]) -> str | None:
+    for line in lines:
+        if re.search(r"\b\d{4}-\d{4}\b", line):
+            return line
+        if re.search(r"\bB\)\s*", line) or re.search(r"\bC\)\s*", line):
+            return line
+    return None
+
+
+def _build_concise_notam_highlight(lines: list[str], primary_line: str | None) -> str:
+    if primary_line is None:
+        return lines[0] if lines else ""
+
+    time_line = _find_notam_time_line(lines)
+    if time_line and time_line != primary_line:
+        return f"{time_line} | {primary_line}"
+    return primary_line
+
+
 def detect_threats(pages: list[dict]) -> list[Threat]:
     raw_threats: list[Threat] = []
     ctx = _extract_route_context(pages)
@@ -1009,12 +1030,12 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                     )
                 )
 
-        # NOTAM blocks
         if "notam information" in full_lower or "rwy" in full_lower or "rffs" in full_lower:
             notam_blocks = _extract_notam_blocks(lines)
             for block in notam_blocks:
                 airport = block["airport"]
                 block_text = block["text"]
+                block_lines = block["lines"]
 
                 if airport not in RELEVANT_AIRPORTS:
                     continue
@@ -1025,20 +1046,20 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
 
                 notam_start, notam_end = _parse_notam_time_fragment(block_text, ctx.get("brief_day"))
 
-                # Runway closed
-                if _is_runway_closed_notam(block_text):
+                runway_line = _find_runway_closed_line(block_lines)
+                if runway_line is not None:
+                    highlight = _build_concise_notam_highlight(block_lines, runway_line)
+
                     if notam_start is not None and notam_end is not None:
                         notam_start, notam_end = _align_window_to_reference(notam_start, notam_end, app_start)
-                        if not _time_overlap_minutes(notam_start, notam_end, app_start, app_end):
-                            pass
-                        else:
+                        if _time_overlap_minutes(notam_start, notam_end, app_start, app_end):
                             raw_threats.append(
                                 Threat(
                                     priority="P2",
                                     category="NOTAM_ADX",
                                     title="Runway closed",
                                     source_section="NOTAM Information",
-                                    highlight_text=block_text,
+                                    highlight_text=highlight,
                                     why_it_matters="Fecho de pista num aeroporto relevante dentro da janela temporal aplicável pode afetar arrival, departure ou diversion planning.",
                                     expected_crew_action="Confirmar indisponibilidade da pista e rever impacto operacional e procedimentos disponíveis.",
                                     affected_phase="General",
@@ -1053,7 +1074,7 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                                 category="NOTAM_ADX",
                                 title="Runway closed",
                                 source_section="NOTAM Information",
-                                highlight_text=block_text,
+                                highlight_text=highlight,
                                 why_it_matters="Fecho de pista num aeroporto relevante pode afetar arrival, departure ou diversion planning.",
                                 expected_crew_action="Confirmar indisponibilidade da pista e rever impacto operacional e procedimentos disponíveis.",
                                 affected_phase="General",
@@ -1062,17 +1083,23 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                             )
                         )
 
-                # RFFS below requirement
                 required_rffs = ctx.get("required_rffs")
                 notam_rffs = _extract_rffs_category(block_text)
                 if required_rffs is not None and notam_rffs is not None and notam_rffs < required_rffs:
+                    primary_line = None
+                    for ln in block_lines:
+                        if _extract_rffs_category(ln) is not None:
+                            primary_line = ln
+                            break
+                    highlight = _build_concise_notam_highlight(block_lines, primary_line or block_lines[0])
+
                     raw_threats.append(
                         Threat(
                             priority="P2",
                             category="NOTAM_ADX",
                             title="RFFS category below aircraft requirement",
                             source_section="NOTAM Information",
-                            highlight_text=block_text,
+                            highlight_text=highlight,
                             why_it_matters="Categoria RFFS publicada no aeroporto relevante está abaixo da exigida para o tipo de aeronave.",
                             expected_crew_action="Confirmar aceitabilidade operacional e impacto na utilização do aeroporto.",
                             affected_phase="General",
@@ -1081,19 +1108,29 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                         )
                     )
 
-                # Generic navaid/procedure limitations
                 lower_block = block_text.lower()
                 if (
                     re.search(r"closed|closure|canceled|cancelled|u/s|unserviceable", lower_block)
                     and any(x in lower_block for x in ["taxiway", "vor", "ils", "procedure", "dme", "light"])
                 ):
+                    primary_line = None
+                    for ln in block_lines:
+                        low = ln.lower()
+                        if re.search(r"closed|closure|canceled|cancelled|u/s|unserviceable", low) and any(
+                            x in low for x in ["taxiway", "vor", "ils", "procedure", "dme", "light"]
+                        ):
+                            primary_line = ln
+                            break
+
+                    highlight = _build_concise_notam_highlight(block_lines, primary_line or block_lines[0])
+
                     raw_threats.append(
                         Threat(
                             priority="P2",
                             category="NOTAM_ADX",
                             title="Runway / procedure / navaid limitation",
                             source_section="NOTAM Information",
-                            highlight_text=block_text,
+                            highlight_text=highlight,
                             why_it_matters="Uma limitação de pista, procedimento ou ajuda rádio pode ser operacionalmente relevante para departure/arrival/diversion.",
                             expected_crew_action="Confirmar procedimento disponível e ajustar o briefing se aplicável.",
                             affected_phase="General",
