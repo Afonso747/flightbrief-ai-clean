@@ -249,9 +249,7 @@ def _build_route_points_with_time_and_coords(pages: list[dict], etd: int | None)
         if etd is not None and abs_time < etd - 12 * 60:
             abs_time += 24 * 60
 
-        route_points.append(
-            {"point": point, "lat": lat, "lon": lon, "time": abs_time}
-        )
+        route_points.append({"point": point, "lat": lat, "lon": lon, "time": abs_time})
 
     route_points.sort(key=lambda x: x["time"])
     return route_points
@@ -295,44 +293,58 @@ def _parse_taf_group_window(line: str) -> tuple[int | None, int | None]:
     return None, None
 
 
+def _detect_weather_line_type(line: str) -> str:
+    stripped = line.strip()
+    if stripped.startswith("SA "):
+        return "METAR"
+    if stripped.startswith("FT "):
+        return "TAF_BASE"
+    if stripped.startswith("TEMPO "):
+        return "TAF_GROUP"
+    if re.match(r"^PROB\d{2}\s+TEMPO ", stripped):
+        return "TAF_GROUP"
+    if stripped.startswith("BECMG "):
+        return "TAF_GROUP"
+    if re.match(r"^FM\d{6}", stripped):
+        return "TAF_GROUP"
+    return "OTHER"
+
+
 def _line_has_weather_threat(line: str) -> bool:
     lower = line.lower()
     return bool(
         re.search(
-            r"\btsra\b|\bvcts\b|\bcb\b|\btcu\b|\b\+ra\b|\b-ra\b|\bra\b|\bfg\b|\bdz\b|\bsn\b|\bfzra\b|\bdu\b|\bmifg\b|\bbkn0\d{2}\b|\bovc0\d{2}\b|\b\d+\s*\d/\dsm\b|\b\d+sm\b|\b\d{4}\b|\b\d{2,3}g\d{2,3}kt\b|g\d{2,3}kt|ws020|windshear",
+            r"\btsra\b|\bvcts\b|\bcb\b|\btcu\b|\b\+ra\b|\b-ra\b|\bra\b|\bfg\b|\bdz\b|\bsn\b|\bfzra\b|\bdu\b|\bmifg\b|\bbkn0\d{2}\b|\bovc0\d{2}\b|\b\d+\s*\d/\dsm\b|\b\d+sm\b|\b\d{2,3}g\d{2,3}kt\b|g\d{2,3}kt|ws020|windshear|\b\d{4}\b",
             lower,
         )
     )
 
 
-def _extract_visibility_meters_or_sm(line: str) -> tuple[float | None, str | None]:
+def _extract_visibility(line: str, wx_type: str) -> tuple[float | None, str | None]:
     lower = line.lower()
 
-    # 1 1/2SM
-    m = re.search(r"\b(\d+)\s+(\d)/(\d)sm\b", lower)
-    if m:
-        whole = int(m.group(1))
-        num = int(m.group(2))
-        den = int(m.group(3))
-        return whole + num / den, "sm"
+    if wx_type == "METAR":
+        m = re.search(r"\b(\d+)\s+(\d)/(\d)sm\b", lower)
+        if m:
+            whole = int(m.group(1))
+            num = int(m.group(2))
+            den = int(m.group(3))
+            return whole + num / den, "sm"
 
-    # 3/4SM
-    m = re.search(r"\b(\d)/(\d)sm\b", lower)
-    if m:
-        return int(m.group(1)) / int(m.group(2)), "sm"
+        m = re.search(r"\b(\d)/(\d)sm\b", lower)
+        if m:
+            return int(m.group(1)) / int(m.group(2)), "sm"
 
-    # 2SM
-    m = re.search(r"\b(\d+(?:\.\d+)?)sm\b", lower)
-    if m:
-        return float(m.group(1)), "sm"
+        m = re.search(r"\b(\d+(?:\.\d+)?)sm\b", lower)
+        if m:
+            return float(m.group(1)), "sm"
 
-    # 2000, 5000, 9999 style meters in TAF
-    # only accept as visibility token if standalone and followed by wx/cloud or line starts with it in TAF group
-    m = re.search(r"\b(0?[0-9]{4})\b", line)
+        return None, None
+
+    # TAF / TAF groups: visibility in meters, often 4 digits like 2500, 0600, 9999
+    m = re.search(r"\b(\d{4})\b", line)
     if m:
-        val = int(m.group(1))
-        if val <= 9999:
-            return float(val), "m"
+        return float(int(m.group(1))), "m"
 
     return None, None
 
@@ -347,7 +359,6 @@ def _extract_ceiling_hundreds_ft(line: str) -> int | None:
 
 
 def _extract_wind(line: str) -> tuple[int | None, int | None, int | None]:
-    # 17028G43KT / 27015KT / VRB02KT
     m = re.search(r"\b(\d{3}|VRB)(\d{2,3})(?:G(\d{2,3}))?KT\b", line)
     if not m:
         return None, None, None
@@ -368,14 +379,10 @@ def _min_angle_between_deg(a: int, b: int) -> int:
 
 
 def _wind_angle_to_primary_runway(airport: str, wind_dir: int | None) -> int | None:
-    if wind_dir is None:
+    if wind_dir is None or airport not in RUNWAY_DB:
         return None
-    if airport not in RUNWAY_DB:
-        return None
-
     headings = RUNWAY_DB[airport]["headings"]
-    angles = [_min_angle_between_deg(wind_dir, h) for h in headings]
-    return min(angles)
+    return min(_min_angle_between_deg(wind_dir, h) for h in headings)
 
 
 def _get_airport_reference_time(airport: str, ctx: dict) -> int | None:
@@ -438,18 +445,18 @@ def _get_airport_applicability_window(airport: str, ctx: dict) -> tuple[int | No
     return max(0, ref_time - 60), ref_time + 60
 
 
-def _is_marginal_weather(line: str, airport: str) -> tuple[bool, list[str]]:
+def _is_marginal_weather(line: str, airport: str, wx_type: str) -> tuple[bool, list[str]]:
     reasons = []
 
     ceiling = _extract_ceiling_hundreds_ft(line)
     if ceiling is not None and ceiling <= 6:
         reasons.append("low ceiling")
 
-    vis, unit = _extract_visibility_meters_or_sm(line)
+    vis, unit = _extract_visibility(line, wx_type)
     if vis is not None:
         if unit == "sm" and vis <= 1.5:
             reasons.append("low visibility")
-        if unit == "m" and vis <= 2000:
+        elif unit == "m" and vis <= 2000:
             reasons.append("low visibility")
 
     wind_dir, speed, gust = _extract_wind(line)
@@ -472,10 +479,10 @@ def _is_marginal_weather(line: str, airport: str) -> tuple[bool, list[str]]:
     return (len(reasons) > 0), reasons
 
 
-def _classify_weather_line(line: str, airport: str, window_label: str) -> tuple[str, str, str, str, str]:
+def _classify_weather_line(line: str, airport: str, window_label: str, wx_type: str) -> tuple[str, str, str, str, str]:
     lower = line.lower()
 
-    is_marginal, marginal_reasons = _is_marginal_weather(line, airport)
+    is_marginal, marginal_reasons = _is_marginal_weather(line, airport, wx_type)
     if is_marginal:
         return (
             "P2",
@@ -552,23 +559,26 @@ def _extract_weather_threats_from_airport_block(airport: str, lines: list[str], 
     for line in lines:
         if _is_negative_line(line):
             continue
+
+        wx_type = _detect_weather_line_type(line)
+        if wx_type == "OTHER":
+            continue
         if not _line_has_weather_threat(line):
             continue
 
         start, end = _parse_taf_group_window(line)
 
-        if start is None or end is None:
-            if line.startswith("SA "):
-                start, end = app_start, app_end
-            else:
-                continue
+        if wx_type == "METAR":
+            start, end = app_start, app_end
+        elif start is None or end is None:
+            continue
 
         start, end = _align_window_to_reference(start, end, app_start)
 
         if not _time_overlap_minutes(start, end, app_start, app_end):
             continue
 
-        priority, category, title, why, expected_action = _classify_weather_line(line, airport, window_label)
+        priority, category, title, why, expected_action = _classify_weather_line(line, airport, window_label, wx_type)
 
         affected_phase = "General"
         if airport == ctx.get("departure"):
@@ -607,7 +617,6 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
         lines = list(_lines(text))
         full_lower = text.lower()
 
-        # MEL / CDL
         mel_lines = []
         if "mel/cdl description" in full_lower or "addt fuel due to mel" in full_lower:
             for line in lines:
@@ -632,7 +641,6 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                 )
             )
 
-        # Callsign
         m = re.search(r"\(FPL-([A-Z]+\d+[A-Z])-IS", text)
         if m:
             callsign = m.group(1)
@@ -652,7 +660,6 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                     )
                 )
 
-        # Oceanic / ETOPS awareness
         if any(tok in full_lower for tok in ["entry1", "etp1", "exit1", "oceanic clearance", "39n060w", "40n050w", "41n040w", "42n030w"]):
             raw_threats.append(
                 Threat(
@@ -669,13 +676,11 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                 )
             )
 
-        # Weather List v6
         if "airport weather list" in full_lower or "destination:" in full_lower or "departure:" in full_lower:
             airport_blocks = _build_airport_weather_blocks(lines)
             for airport, airport_lines in airport_blocks.items():
                 raw_threats.extend(_extract_weather_threats_from_airport_block(airport, airport_lines, pnum, ctx))
 
-        # Navigation / GNSS / interference
         for line in lines:
             if _is_negative_line(line):
                 continue
@@ -700,7 +705,6 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                     )
                 )
 
-        # NOTAM runway / procedure / navaid
         for line in lines:
             if _is_negative_line(line):
                 continue
