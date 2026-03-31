@@ -63,6 +63,20 @@ def _minutes_to_hhmm(minutes: int) -> str:
     return f"{hh:02d}:{mm:02d}Z"
 
 
+def _extract_brief_date_day(pages: list[dict]) -> int | None:
+    joined = "\n".join(page["text"] for page in pages[:5])
+
+    m = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", joined)
+    if m:
+        return int(m.group(3))
+
+    m = re.search(r"\b(\d{2})[A-Z]{3}\d{4}\b", joined)
+    if m:
+        return int(m.group(1))
+
+    return None
+
+
 def _extract_route_context(pages: list[dict]) -> dict:
     joined = "\n".join(page["text"] for page in pages[:12])
 
@@ -118,6 +132,7 @@ def _extract_route_context(pages: list[dict]) -> dict:
         "departure": departure,
         "destination": destination,
         "etops_windows": etops_windows,
+        "brief_day": _extract_brief_date_day(pages),
     }
 
 
@@ -268,27 +283,39 @@ def _align_window_to_reference(start: int, end: int, ref_start: int) -> tuple[in
     return start, end
 
 
-def _parse_taf_group_window(line: str) -> tuple[int | None, int | None]:
+def _parse_taf_group_window(line: str, brief_day: int | None) -> tuple[int | None, int | None]:
+    if brief_day is None:
+        return None, None
+
+    def ddhh_to_abs_minutes(ddhh: str) -> int:
+        day = int(ddhh[:2])
+        hour = int(ddhh[2:])
+        day_offset = day - brief_day
+        if day_offset < 0:
+            day_offset += 31
+        return day_offset * 24 * 60 + hour * 60
+
     m = re.search(r"\bPROB\d{2}\s+TEMPO\s+(\d{4})/(\d{4})\b", line)
     if m:
-        return _hhmm_to_minutes(m.group(1)[-4:]), _hhmm_to_minutes(m.group(2)[-4:])
+        return ddhh_to_abs_minutes(m.group(1)), ddhh_to_abs_minutes(m.group(2))
 
     m = re.search(r"\bTEMPO\s+(\d{4})/(\d{4})\b", line)
     if m:
-        return _hhmm_to_minutes(m.group(1)[-4:]), _hhmm_to_minutes(m.group(2)[-4:])
+        return ddhh_to_abs_minutes(m.group(1)), ddhh_to_abs_minutes(m.group(2))
 
     m = re.search(r"\bBECMG\s+(\d{4})/(\d{4})\b", line)
     if m:
-        return _hhmm_to_minutes(m.group(1)[-4:]), _hhmm_to_minutes(m.group(2)[-4:])
+        return ddhh_to_abs_minutes(m.group(1)), ddhh_to_abs_minutes(m.group(2))
 
     m = re.search(r"\bFM(\d{6})\b", line)
     if m:
-        start = _hhmm_to_minutes(m.group(1)[-4:])
+        ddhh = m.group(1)[:4]
+        start = ddhh_to_abs_minutes(ddhh)
         return start, start + 360
 
     m = re.search(r"\bFT\s+\d{6}\s+(\d{4})/(\d{4})\b", line)
     if m:
-        return _hhmm_to_minutes(m.group(1)[-4:]), _hhmm_to_minutes(m.group(2)[-4:])
+        return ddhh_to_abs_minutes(m.group(1)), ddhh_to_abs_minutes(m.group(2))
 
     return None, None
 
@@ -341,10 +368,18 @@ def _extract_visibility(line: str, wx_type: str) -> tuple[float | None, str | No
 
         return None, None
 
-    # TAF / TAF groups: visibility in meters, often 4 digits like 2500, 0600, 9999
-    m = re.search(r"\b(\d{4})\b", line)
-    if m:
-        return float(int(m.group(1))), "m"
+    patterns = [
+        r"PROB\d{2}\s+TEMPO\s+\d{4}/\d{4}\s+(?:\d{3}V\d{3}\s+)?(?:\d{5}KT|\d{3}\d{2,3}(?:G\d{2,3})?KT|VRB\d{2,3}(?:G\d{2,3})?KT)\s+(\d{4})\b",
+        r"TEMPO\s+\d{4}/\d{4}\s+(?:\d{3}V\d{3}\s+)?(?:\d{5}KT|\d{3}\d{2,3}(?:G\d{2,3})?KT|VRB\d{2,3}(?:G\d{2,3})?KT)\s+(\d{4})\b",
+        r"BECMG\s+\d{4}/\d{4}\s+(?:\d{3}V\d{3}\s+)?(?:\d{5}KT|\d{3}\d{2,3}(?:G\d{2,3})?KT|VRB\d{2,3}(?:G\d{2,3})?KT)\s+(\d{4})\b",
+        r"FM\d{6}\s+(?:\d{3}V\d{3}\s+)?(?:\d{5}KT|\d{3}\d{2,3}(?:G\d{2,3})?KT|VRB\d{2,3}(?:G\d{2,3})?KT)\s+(\d{4})\b",
+        r"FT\s+\d{6}\s+\d{4}/\d{4}\s+(?:\d{3}V\d{3}\s+)?(?:\d{5}KT|\d{3}\d{2,3}(?:G\d{2,3})?KT|VRB\d{2,3}(?:G\d{2,3})?KT)\s+(\d{4})\b",
+    ]
+
+    for pat in patterns:
+        m = re.search(pat, line)
+        if m:
+            return float(int(m.group(1))), "m"
 
     return None, None
 
@@ -566,17 +601,13 @@ def _extract_weather_threats_from_airport_block(airport: str, lines: list[str], 
         if not _line_has_weather_threat(line):
             continue
 
-        start, end = _parse_taf_group_window(line)
+        start, end = _parse_taf_group_window(line, ctx.get("brief_day"))
 
-        # METAR applies to the airport local relevance window.
         if wx_type == "METAR":
             start, end = app_start, app_end
-
-        # TAF groups must have an explicit time group.
         elif wx_type in {"TAF_GROUP", "TAF_BASE"}:
             if start is None or end is None:
                 continue
-
         else:
             continue
 
