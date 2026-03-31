@@ -341,7 +341,12 @@ def _line_has_weather_threat(line: str) -> bool:
     lower = line.lower()
     return bool(
         re.search(
-            r"\btsra\b|\bvcts\b|\bcb\b|\btcu\b|\b\+ra\b|\b-ra\b|\bra\b|\bfg\b|\bdz\b|\bsn\b|\bfzra\b|\bdu\b|\bmifg\b|\bbkn0\d{2}\b|\bovc0\d{2}\b|\b\d+\s*\d/\dsm\b|\b\d+sm\b|\b\d{2,3}g\d{2,3}kt\b|g\d{2,3}kt|ws020|windshear|\b\d{4}\b",
+            r"\btsra\b|\bvcts\b|\bts\b|\bshra\b|\b\+shra\b|\b-shra\b|\b\+ra\b|\b-ra\b|\bra\b|\bfg\b|\bdz\b|\bsn\b|\bfzra\b|\bdu\b|\bmifg\b|"
+            r"\b(?:few|sct|bkn|ovc)\d{3}cb\b|\b(?:few|sct|bkn|ovc)\d{3}tcu\b|"
+            r"\bbkn0\d{2}\b|\bovc0\d{2}\b|"
+            r"\b\d+\s*\d/\dsm\b|\b\d+sm\b|"
+            r"\b\d{2,3}g\d{2,3}kt\b|\bvrb\d{2,3}g\d{2,3}kt\b|\bg\d{2,3}kt\b|"
+            r"ws020|windshear|\b\d{4}\b",
             lower,
         )
     )
@@ -497,7 +502,6 @@ def _is_marginal_weather(line: str, airport: str, wx_type: str) -> tuple[bool, l
     wind_dir, speed, gust = _extract_wind(line)
     angle = _wind_angle_to_primary_runway(airport, wind_dir)
 
-    # vento com direção conhecida
     if speed is not None and wind_dir is not None and angle is not None:
         if speed > 15 and angle >= 30:
             reasons.append("strong off-axis wind")
@@ -506,7 +510,6 @@ def _is_marginal_weather(line: str, airport: str, wx_type: str) -> tuple[bool, l
         if gust > 17 and angle >= 30:
             reasons.append("strong off-axis gust")
 
-    # caso especial VRB
     if wind_dir is None:
         if speed is not None and speed > 15:
             reasons.append("strong variable wind")
@@ -515,13 +518,30 @@ def _is_marginal_weather(line: str, airport: str, wx_type: str) -> tuple[bool, l
 
     lower = line.lower()
     phenomena_patterns = [
-        r"\bfg\b", r"\bdz\b", r"\bsn\b", r"\bfzra\b", r"\bdu\b", r"\bmifg\b",
-        r"\bcb\b", r"\btcu\b", r"\bts\b", r"\btsra\b", r"\bra\b"
+        r"\bfg\b",
+        r"\bdz\b",
+        r"\bsn\b",
+        r"\bfzra\b",
+        r"\bdu\b",
+        r"\bmifg\b",
+        r"\bts\b",
+        r"\btsra\b",
+        r"\bshra\b",
+        r"\b\+shra\b",
+        r"\b-shra\b",
+        r"\b\+ra\b",
+        r"\b-ra\b",
+        r"\bra\b",
+        r"\b(?:few|sct|bkn|ovc)\d{3}cb\b",
+        r"\b(?:few|sct|bkn|ovc)\d{3}tcu\b",
+        r"\bcb\b",
+        r"\btcu\b",
     ]
     if any(re.search(p, lower) for p in phenomena_patterns):
         reasons.append("relevant phenomena")
 
     return (len(reasons) > 0), reasons
+
 
 def _classify_weather_line(line: str, airport: str, window_label: str, wx_type: str) -> tuple[str, str, str, str, str]:
     lower = line.lower()
@@ -545,7 +565,7 @@ def _classify_weather_line(line: str, airport: str, window_label: str, wx_type: 
             "Reforçar briefing de departure/arrival e awareness para windshear recovery.",
         )
 
-    if re.search(r"\btsra\b|\bvcts\b|\bcb\b|\btcu\b|\b\+ra\b|\b-ra\b|\bra\b", lower):
+    if re.search(r"\btsra\b|\bvcts\b|\bcb\b|\btcu\b|\bshra\b|\b\+ra\b|\b-ra\b|\bra\b", lower):
         return (
             "P2",
             "MET",
@@ -554,7 +574,7 @@ def _classify_weather_line(line: str, airport: str, window_label: str, wx_type: 
             "Briefar weather avoidance e monitorização.",
         )
 
-    if re.search(r"\b\d{2,3}g\d{2,3}kt\b|g\d{2,3}kt", lower):
+    if re.search(r"\b\d{2,3}g\d{2,3}kt\b|\bvrb\d{2,3}g\d{2,3}kt\b|\bg\d{2,3}kt\b", lower):
         return (
             "P2",
             "MET",
