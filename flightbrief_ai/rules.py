@@ -497,11 +497,21 @@ def _is_marginal_weather(line: str, airport: str, wx_type: str) -> tuple[bool, l
     wind_dir, speed, gust = _extract_wind(line)
     angle = _wind_angle_to_primary_runway(airport, wind_dir)
 
-    if speed is not None and speed > 15 and angle is not None and angle >= 30:
-        reasons.append("strong off-axis wind")
+    # vento com direção conhecida
+    if speed is not None and wind_dir is not None and angle is not None:
+        if speed > 15 and angle >= 30:
+            reasons.append("strong off-axis wind")
 
-    if gust is not None and gust > 17 and angle is not None and angle >= 30:
-        reasons.append("strong off-axis gust")
+    if gust is not None and wind_dir is not None and angle is not None:
+        if gust > 17 and angle >= 30:
+            reasons.append("strong off-axis gust")
+
+    # caso especial VRB
+    if wind_dir is None:
+        if speed is not None and speed > 15:
+            reasons.append("strong variable wind")
+        if gust is not None and gust > 17:
+            reasons.append("strong variable gust")
 
     lower = line.lower()
     phenomena_patterns = [
@@ -512,7 +522,6 @@ def _is_marginal_weather(line: str, airport: str, wx_type: str) -> tuple[bool, l
         reasons.append("relevant phenomena")
 
     return (len(reasons) > 0), reasons
-
 
 def _classify_weather_line(line: str, airport: str, window_label: str, wx_type: str) -> tuple[str, str, str, str, str]:
     lower = line.lower()
