@@ -597,7 +597,52 @@ def _is_marginal_weather(line: str, airport: str, wx_type: str) -> tuple[bool, l
     return (len(reasons) > 0), reasons
 
 
-def _classify_weather_line(line: str, airport: str, window_label: str, wx_type: str) -> tuple[str, str, str, str, str]:
+def _is_operational_weather_awareness(line: str, airport: str, wx_type: str) -> bool:
+    lower = line.lower()
+
+    # nunca criar awareness para linhas claramente benignas
+    if "cavok" in lower:
+        return False
+
+    if re.search(r"\bvrb0[0-5]kt\b", lower):
+        return False
+
+    vis, unit = _extract_visibility(line, wx_type)
+    ceiling = _extract_ceiling_hundreds_ft(line)
+    wind_dir, speed, gust = _extract_wind(line)
+    angle = _wind_angle_to_primary_runway(airport, wind_dir)
+
+    # precipitação / convecção / windshear
+    if re.search(r"\btsra\b|\bvcts\b|\bts\b|\bshra\b|\b\+ra\b|\b-ra\b|\bra\b|\bcb\b|\btcu\b|ws020|windshear", lower):
+        return True
+
+    # visibilidade degradada mas não marginal
+    if vis is not None:
+        if unit == "sm" and vis < 6.0:
+            return True
+        if unit == "m" and vis < 9999:
+            return True
+
+    # teto operacionalmente relevante mas não marginal
+    if ceiling is not None and 6 < ceiling <= 15:
+        return True
+
+    # vento / rajada operacionalmente relevantes
+    if wind_dir is None:
+        if speed is not None and speed > 15:
+            return True
+        if gust is not None and gust > 17:
+            return True
+    else:
+        if speed is not None and speed > 15 and angle is not None and angle >= 30:
+            return True
+        if gust is not None and gust > 17 and angle is not None and angle >= 30:
+            return True
+
+    return False
+
+
+def _classify_weather_line(line: str, airport: str, window_label: str, wx_type: str) -> tuple[str, str, str, str, str] | None:
     lower = line.lower()
 
     is_marginal, marginal_reasons = _is_marginal_weather(line, airport, wx_type)
@@ -610,6 +655,9 @@ def _classify_weather_line(line: str, airport: str, window_label: str, wx_type: 
             "Rever adequacy, minima e utilidade real do aeroporto para desvio/alternante.",
         )
 
+    if not _is_operational_weather_awareness(line, airport, wx_type):
+        return None
+
     if "ws020" in lower or "windshear" in lower:
         return (
             "P2",
@@ -619,7 +667,7 @@ def _classify_weather_line(line: str, airport: str, window_label: str, wx_type: 
             "Reforçar briefing de departure/arrival e awareness para windshear recovery.",
         )
 
-    if re.search(r"\btsra\b|\bvcts\b|\bcb\b|\btcu\b|\bshra\b|\b\+ra\b|\b-ra\b|\bra\b", lower):
+    if re.search(r"\btsra\b|\bvcts\b|\bts\b|\bcb\b|\btcu\b|\bshra\b|\b\+ra\b|\b-ra\b|\bra\b", lower):
         return (
             "P2",
             "MET",
@@ -701,7 +749,11 @@ def _extract_weather_threats_from_airport_block(airport: str, lines: list[str], 
         if not _time_overlap_minutes(start, end, app_start, app_end):
             continue
 
-        priority, category, title, why, expected_action = _classify_weather_line(line, airport, window_label, wx_type)
+        classification = _classify_weather_line(line, airport, window_label, wx_type)
+        if classification is None:
+            continue
+
+        priority, category, title, why, expected_action = classification
 
         affected_phase = "General"
         if airport == ctx.get("departure"):
