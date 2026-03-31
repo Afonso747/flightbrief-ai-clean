@@ -568,9 +568,16 @@ def _extract_weather_threats_from_airport_block(airport: str, lines: list[str], 
 
         start, end = _parse_taf_group_window(line)
 
+        # METAR applies to the airport local relevance window.
         if wx_type == "METAR":
             start, end = app_start, app_end
-        elif start is None or end is None:
+
+        # TAF groups must have an explicit time group.
+        elif wx_type in {"TAF_GROUP", "TAF_BASE"}:
+            if start is None or end is None:
+                continue
+
+        else:
             continue
 
         start, end = _align_window_to_reference(start, end, app_start)
