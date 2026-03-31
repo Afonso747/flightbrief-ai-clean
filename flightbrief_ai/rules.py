@@ -729,7 +729,7 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                     )
                 )
 
-               # Oceanic procedures awareness
+                      # Oceanic procedures awareness
         oceanic_patterns = [
             r"\b\d{2}N\d{3}W\b",           # ex: 40N020W, 42N040W
             r"\bsanta maria oceanic\b",
@@ -739,21 +739,24 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
             r"\bt9\b",
         ]
 
-        oceanic_match = None
-        for pat in oceanic_patterns:
-            m = re.search(pat, text, re.IGNORECASE)
-            if m:
-                oceanic_match = m.group(0)
+        oceanic_highlight_line = None
+
+        for line in lines:
+            for pat in oceanic_patterns:
+                if re.search(pat, line, re.IGNORECASE):
+                    oceanic_highlight_line = line
+                    break
+            if oceanic_highlight_line:
                 break
 
-        if oceanic_match:
+        if oceanic_highlight_line:
             raw_threats.append(
                 Threat(
                     priority="P3",
                     category="OCEANIC",
                     title="Oceanic procedures",
                     source_section="ATC Flight Plan / Operational Flight Plan",
-                    highlight_text=oceanic_match.upper(),
+                    highlight_text=oceanic_highlight_line,
                     why_it_matters="Complexidade de procedimentos oceanicos pode aumentar workload",
                     expected_crew_action="Rever procedimentos locais aplicáveis e de contigencia em ambiente oceanico",
                     affected_phase="Enroute",
