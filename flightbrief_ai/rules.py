@@ -103,7 +103,10 @@ def _extract_route_context(pages: list[dict]) -> dict:
         etd = _hhmm_to_minutes(cover_match.group(1).replace(":", ""))
         eta = _hhmm_to_minutes(cover_match.group(2).replace(":", ""))
 
-    route_match = re.search(r"\b[A-Z]{3,}\d+\s+\d{2}[A-Z]{3}\d{4}\s+([A-Z]{4})\s+([A-Z]{4})\b", joined)
+    route_match = re.search(
+        r"\b[A-Z]{3,}\d+\s+\d{2}[A-Z]{3}\d{4}\s+([A-Z]{4})\s+([A-Z]{4})\b",
+        joined,
+    )
     if route_match:
         departure = route_match.group(1)
         destination = route_match.group(2)
@@ -283,33 +286,7 @@ def _align_window_to_reference(start: int, end: int, ref_start: int) -> tuple[in
     return start, end
 
 
-def _parse_taf_group_window(line: str, brief_day: int | None)def _parse_metar_time(line: str, brief_day: int | None) -> tuple[int | None, int | None]:
-    """
-    Parses METAR time from SA lines.
-    Example:
-      SA 031730 -> day 03 17:30Z
-    Returns a short validity window around the observation time.
-    """
-    if brief_day is None:
-        return None, None
-
-    m = re.match(r"^SA\s+(\d{6})\b", line.strip())
-    if not m:
-        return None, None
-
-    ddhhmm = m.group(1)
-    day = int(ddhhmm[:2])
-    hour = int(ddhhmm[2:4])
-    minute = int(ddhhmm[4:6])
-
-    day_offset = day - brief_day
-    if day_offset < 0:
-        day_offset += 31
-
-    obs_time = day_offset * 24 * 60 + hour * 60 + minute
-
-    # considerar METAR válido numa janela curta
-    return obs_time - 60, obs_time + 60 -> tuple[int | None, int | None]:
+def _parse_taf_group_window(line: str, brief_day: int | None) -> tuple[int | None, int | None]:
     if brief_day is None:
         return None, None
 
@@ -344,6 +321,27 @@ def _parse_taf_group_window(line: str, brief_day: int | None)def _parse_metar_ti
         return ddhh_to_abs_minutes(m.group(1)), ddhh_to_abs_minutes(m.group(2))
 
     return None, None
+
+
+def _parse_metar_time(line: str, brief_day: int | None) -> tuple[int | None, int | None]:
+    if brief_day is None:
+        return None, None
+
+    m = re.match(r"^SA\s+(\d{6})\b", line.strip())
+    if not m:
+        return None, None
+
+    ddhhmm = m.group(1)
+    day = int(ddhhmm[:2])
+    hour = int(ddhhmm[2:4])
+    minute = int(ddhhmm[4:6])
+
+    day_offset = day - brief_day
+    if day_offset < 0:
+        day_offset += 31
+
+    obs_time = day_offset * 24 * 60 + hour * 60 + minute
+    return obs_time - 60, obs_time + 60
 
 
 def _detect_weather_line_type(line: str) -> str:
@@ -558,10 +556,6 @@ def _is_marginal_weather(line: str, airport: str, wx_type: str) -> tuple[bool, l
         r"\b\+ra\b",
         r"\b-ra\b",
         r"\bra\b",
-        r"\b(?:few|sct|bkn|ovc)\d{3}cb\b",
-        r"\b(?:few|sct|bkn|ovc)\d{3}tcu\b",
-        r"\bcb\b",
-        r"\btcu\b",
     ]
     if any(re.search(p, lower) for p in phenomena_patterns):
         reasons.append("relevant phenomena")
@@ -659,14 +653,14 @@ def _extract_weather_threats_from_airport_block(airport: str, lines: list[str], 
         start, end = _parse_taf_group_window(line, ctx.get("brief_day"))
 
         if wx_type == "METAR":
-    start, end = _parse_metar_time(line, ctx.get("brief_day"))
-    if start is None or end is None:
-        continue
-elif wx_type in {"TAF_GROUP", "TAF_BASE"}:
-    if start is None or end is None:
-        continue
-else:
-    continue
+            start, end = _parse_metar_time(line, ctx.get("brief_day"))
+            if start is None or end is None:
+                continue
+        elif wx_type in {"TAF_GROUP", "TAF_BASE"}:
+            if start is None or end is None:
+                continue
+        else:
+            continue
 
         start, end = _align_window_to_reference(start, end, app_start)
 
@@ -712,7 +706,6 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
         lines = list(_lines(text))
         full_lower = text.lower()
 
-        # MEL / CDL
         mel_lines = []
         if "mel/cdl description" in full_lower or "addt fuel due to mel" in full_lower:
             for line in lines:
@@ -737,7 +730,6 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                 )
             )
 
-        # Callsign
         m = re.search(r"\(FPL-([A-Z]+\d+[A-Z])-IS", text)
         if m:
             callsign = m.group(1)
@@ -757,9 +749,9 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                     )
                 )
 
-                      # Oceanic procedures awareness
+        # Oceanic procedures awareness
         oceanic_patterns = [
-            r"\b\d{2}N\d{3}W\b",           # ex: 40N020W, 42N040W
+            r"\b\d{2}N\d{3}W\b",
             r"\bsanta maria oceanic\b",
             r"\bshanwick oceanic\b",
             r"\bnew york oceanic\b",
@@ -768,7 +760,6 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
         ]
 
         oceanic_highlight_line = None
-
         for line in lines:
             for pat in oceanic_patterns:
                 if re.search(pat, line, re.IGNORECASE):
@@ -793,13 +784,11 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                 )
             )
 
-        # Weather
         if "airport weather list" in full_lower or "destination:" in full_lower or "departure:" in full_lower:
             airport_blocks = _build_airport_weather_blocks(lines)
             for airport, airport_lines in airport_blocks.items():
                 raw_threats.extend(_extract_weather_threats_from_airport_block(airport, airport_lines, pnum, ctx))
 
-        # Navigation / RAIM / GNSS
         for line in lines:
             if _is_negative_line(line):
                 continue
@@ -826,7 +815,6 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                     )
                 )
 
-        # NOTAM runway / procedure / navaid
         for line in lines:
             if _is_negative_line(line):
                 continue
@@ -855,7 +843,6 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
                     )
                 )
 
-    # Remove Weather awareness when same airport already has Marginal weather
     filtered_raw_threats: list[Threat] = []
 
     airports_with_marginal = {
@@ -871,7 +858,6 @@ def detect_threats(pages: list[dict]) -> list[Threat]:
 
     raw_threats = filtered_raw_threats
 
-    # Deduplicate / consolidate
     grouped: dict[tuple[str, str, str, str], list[Threat]] = defaultdict(list)
     for threat in raw_threats:
         key = _make_key(threat.priority, threat.category, threat.title, threat.affected_area)
