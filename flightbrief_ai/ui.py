@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import base64
 import hashlib
-import json
 
 import fitz  # PyMuPDF
 import streamlit as st
-import streamlit.components.v1 as components
 
 from flightbrief_ai.engine import FlightBriefEngine
 from flightbrief_ai.pdf_annotator import PDFAnnotator
@@ -17,7 +14,6 @@ def _init_review_state() -> None:
     defaults = {
         "review_pdf_name": None,
         "review_pdf_hash": None,
-        "review_scrolled_to_end": False,
         "review_acknowledged": False,
         "analysis_done": False,
         "annotated_pdf_bytes": None,
@@ -35,177 +31,23 @@ def _pdf_hash(pdf_bytes: bytes) -> str:
 def _reset_review_state_for_new_file(pdf_name: str, pdf_bytes: bytes) -> None:
     st.session_state["review_pdf_name"] = pdf_name
     st.session_state["review_pdf_hash"] = _pdf_hash(pdf_bytes)
-    st.session_state["review_scrolled_to_end"] = False
     st.session_state["review_acknowledged"] = False
     st.session_state["analysis_done"] = False
     st.session_state["annotated_pdf_bytes"] = None
     st.session_state["summary_pdf_bytes"] = None
 
 
-def _render_pdf_pages_as_base64(pdf_bytes: bytes) -> list[str]:
+@st.cache_data(show_spinner=False)
+def _render_pdf_pages(pdf_bytes: bytes) -> list[bytes]:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    images_b64: list[str] = []
+    images: list[bytes] = []
 
     for page in doc:
         pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2), alpha=False)
-        img_bytes = pix.tobytes("png")
-        images_b64.append(base64.b64encode(img_bytes).decode("utf-8"))
+        images.append(pix.tobytes("png"))
 
     doc.close()
-    return images_b64
-
-
-def _scroll_review_component(images_b64: list[str], component_key: str) -> bool:
-    payload = json.dumps(images_b64)
-
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="utf-8" />
-      <style>
-        html, body {{
-          margin: 0;
-          padding: 0;
-          font-family: Arial, sans-serif;
-          background: white;
-        }}
-        .wrapper {{
-          border: 1px solid #d9d9d9;
-          border-radius: 10px;
-          overflow: hidden;
-        }}
-        .header {{
-          padding: 10px 12px;
-          border-bottom: 1px solid #e6e6e6;
-          background: #fafafa;
-          font-size: 14px;
-        }}
-        .viewer {{
-          height: 700px;
-          overflow-y: auto;
-          background: #f3f4f6;
-          padding: 16px;
-          box-sizing: border-box;
-          scroll-behavior: smooth;
-        }}
-        .page {{
-          display: block;
-          width: 100%;
-          max-width: 900px;
-          margin: 0 auto 16px auto;
-          background: white;
-          box-shadow: 0 1px 4px rgba(0,0,0,0.12);
-          border-radius: 6px;
-        }}
-        .footer {{
-          padding: 10px 12px;
-          border-top: 1px solid #e6e6e6;
-          background: #fafafa;
-          font-size: 13px;
-        }}
-        .ok {{
-          color: #0a7f39;
-          font-weight: 600;
-        }}
-        .pending {{
-          color: #8a5a00;
-          font-weight: 600;
-        }}
-        .hidden {{
-          display: none;
-        }}
-        .unlock-btn {{
-          margin-top: 10px;
-          padding: 10px 14px;
-          border: 0;
-          border-radius: 8px;
-          background: #0f62fe;
-          color: white;
-          font-size: 14px;
-          cursor: pointer;
-        }}
-        .unlock-btn:disabled {{
-          background: #9ca3af;
-          cursor: not-allowed;
-        }}
-      </style>
-    </head>
-    <body>
-      <div class="wrapper">
-        <div class="header">
-          Scroll through the entire company datapackage to unlock acknowledgement.
-        </div>
-        <div id="viewer" class="viewer"></div>
-        <div class="footer">
-          <div id="status" class="pending">Scroll to the end of the document to continue.</div>
-          <button id="unlockBtn" class="unlock-btn hidden">Unlock acknowledgement</button>
-        </div>
-      </div>
-
-      <script>
-        const images = {payload};
-        const viewer = document.getElementById("viewer");
-        const statusEl = document.getElementById("status");
-        const unlockBtn = document.getElementById("unlockBtn");
-        let reachedBottom = false;
-
-        images.forEach((img64, idx) => {{
-          const img = document.createElement("img");
-          img.className = "page";
-          img.src = "data:image/png;base64," + img64;
-          img.alt = "Page " + (idx + 1);
-          viewer.appendChild(img);
-        }});
-
-        function sendValue(value) {{
-          window.parent.postMessage({{
-            isStreamlitMessage: true,
-            type: "streamlit:setComponentValue",
-            value: value
-          }}, "*");
-        }}
-
-        function setFrameHeight(height) {{
-          window.parent.postMessage({{
-            isStreamlitMessage: true,
-            type: "streamlit:setFrameHeight",
-            height: height
-          }}, "*");
-        }}
-
-        function checkScroll() {{
-          const threshold = 20;
-          const atBottom =
-            viewer.scrollTop + viewer.clientHeight >= viewer.scrollHeight - threshold;
-
-          if (atBottom && !reachedBottom) {{
-            reachedBottom = true;
-            statusEl.textContent = "End of document reached. Click below to unlock acknowledgement.";
-            statusEl.className = "ok";
-            unlockBtn.classList.remove("hidden");
-          }}
-        }}
-
-        viewer.addEventListener("scroll", checkScroll);
-
-        unlockBtn.addEventListener("click", () => {{
-          if (!reachedBottom) return;
-          sendValue(true);
-        }});
-
-        window.addEventListener("load", () => {{
-          setFrameHeight(860);
-        }});
-
-        setTimeout(() => setFrameHeight(860), 300);
-      </script>
-    </body>
-    </html>
-    """
-
-    value = components.html(html, height=860, scrolling=False)
-    return value is True
+    return images
 
 
 def _render_review_gate(pdf_bytes: bytes, pdf_name: str) -> bool:
@@ -223,31 +65,29 @@ def _render_review_gate(pdf_bytes: bytes, pdf_name: str) -> bool:
     )
 
     with st.spinner("A preparar visualização do datapackage..."):
-        images_b64 = _render_pdf_pages_as_base64(pdf_bytes)
+        page_images = _render_pdf_pages(pdf_bytes)
 
-    unlocked = _scroll_review_component(
-        images_b64,
-        component_key=f"scroll-review-{current_hash}",
+    st.info(
+        "Scroll to the bottom of the datapackage. The acknowledgement section is only available after the last page."
     )
 
-    if unlocked:
-        st.session_state["review_scrolled_to_end"] = True
-
-    if st.session_state["review_scrolled_to_end"]:
-        st.success("Acknowledgement unlocked.")
-        st.session_state["review_acknowledged"] = st.checkbox(
-            "I have read the entire company provided datapackage",
-            value=st.session_state["review_acknowledged"],
-            key=f"review_ack_{current_hash}",
+    for idx, image_bytes in enumerate(page_images, start=1):
+        st.image(
+            image_bytes,
+            caption=f"Page {idx} of {len(page_images)}",
+            use_container_width=True,
         )
-    else:
-        st.session_state["review_acknowledged"] = False
-        st.warning("You must scroll to the end of the document and unlock acknowledgement before continuing.")
 
-    return bool(
-        st.session_state["review_scrolled_to_end"]
-        and st.session_state["review_acknowledged"]
+    st.divider()
+    st.success("End of document reached.")
+
+    st.session_state["review_acknowledged"] = st.checkbox(
+        "I have read the entire company provided datapackage",
+        value=st.session_state["review_acknowledged"],
+        key=f"review_ack_{current_hash}",
     )
+
+    return bool(st.session_state["review_acknowledged"])
 
 
 def run_app() -> None:
