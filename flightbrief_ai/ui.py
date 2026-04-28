@@ -55,7 +55,7 @@ def _render_pdf_pages_as_base64(pdf_bytes: bytes) -> list[str]:
     return images_b64
 
 
-def _scroll_review_component(images_b64: list[str], component_key: str) -> bool:
+def _scroll_review_component(images_b64: list[str]) -> bool:
     payload = json.dumps(images_b64)
 
     html = f"""
@@ -120,7 +120,7 @@ def _scroll_review_component(images_b64: list[str], component_key: str) -> bool:
           Scroll through the entire company datapackage to unlock acknowledgement.
         </div>
         <div id="viewer" class="viewer"></div>
-        <div id="footer" class="footer">
+        <div class="footer">
           <span id="status" class="pending">Scroll to the end of the document to continue.</span>
         </div>
       </div>
@@ -129,7 +129,7 @@ def _scroll_review_component(images_b64: list[str], component_key: str) -> bool:
         const images = {payload};
         const viewer = document.getElementById("viewer");
         const statusEl = document.getElementById("status");
-        let alreadySent = false;
+        let sentTrue = false;
 
         images.forEach((img64, idx) => {{
           const img = document.createElement("img");
@@ -140,51 +140,55 @@ def _scroll_review_component(images_b64: list[str], component_key: str) -> bool:
         }});
 
         function sendValue(value) {{
-          const message = {{
+          window.parent.postMessage({{
             isStreamlitMessage: true,
             type: "streamlit:setComponentValue",
             value: value
-          }};
-          window.parent.postMessage(message, "*");
+          }}, "*");
         }}
 
-        function sendHeight(height) {{
-          const message = {{
+        function setFrameHeight(height) {{
+          window.parent.postMessage({{
             isStreamlitMessage: true,
             type: "streamlit:setFrameHeight",
             height: height
-          }};
-          window.parent.postMessage(message, "*");
+          }}, "*");
         }}
 
         function checkScroll() {{
-          const threshold = 24;
+          const threshold = 20;
           const atBottom =
             viewer.scrollTop + viewer.clientHeight >= viewer.scrollHeight - threshold;
 
           if (atBottom) {{
             statusEl.textContent = "End of document reached.";
             statusEl.className = "ok";
-            if (!alreadySent) {{
-              alreadySent = true;
+            if (!sentTrue) {{
+              sentTrue = true;
               sendValue(true);
             }}
+          }} else {{
+            statusEl.textContent = "Scroll to the end of the document to continue.";
+            statusEl.className = "pending";
           }}
         }}
 
         viewer.addEventListener("scroll", checkScroll);
+
         window.addEventListener("load", () => {{
-          sendHeight(820);
+          setFrameHeight(820);
+          sendValue(false);
           checkScroll();
         }});
-        setTimeout(() => sendHeight(820), 300);
+
+        setTimeout(() => setFrameHeight(820), 300);
       </script>
     </body>
     </html>
     """
 
     value = components.html(html, height=820, scrolling=False)
-    return bool(value)
+    return value is True
 
 
 def _render_review_gate(pdf_bytes: bytes, pdf_name: str) -> bool:
@@ -204,22 +208,22 @@ def _render_review_gate(pdf_bytes: bytes, pdf_name: str) -> bool:
     with st.spinner("A preparar visualização do datapackage..."):
         images_b64 = _render_pdf_pages_as_base64(pdf_bytes)
 
-    scrolled_to_end = _scroll_review_component(
-        images_b64,
-        component_key=f"scroll-review-{current_hash}",
-    )
+    scrolled_to_end = _scroll_review_component(images_b64)
 
     if scrolled_to_end:
         st.session_state["review_scrolled_to_end"] = True
 
     if st.session_state["review_scrolled_to_end"]:
         st.success("End of document reached.")
+
         st.session_state["review_acknowledged"] = st.checkbox(
             "I have read the entire company provided datapackage",
             value=st.session_state["review_acknowledged"],
+            key=f"review_ack_{current_hash}",
         )
     else:
-        st.warning("You must scroll to the end of the document before continuing.")
+        st.session_state["review_acknowledged"] = False
+        st.warning("You must scroll to the end of the document before acknowledgement is unlocked.")
 
     return bool(
         st.session_state["review_scrolled_to_end"]
