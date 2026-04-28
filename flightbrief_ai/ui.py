@@ -55,7 +55,7 @@ def _render_pdf_pages_as_base64(pdf_bytes: bytes) -> list[str]:
     return images_b64
 
 
-def _scroll_review_component(images_b64: list[str]) -> bool:
+def _scroll_review_component(images_b64: list[str], component_key: str) -> bool:
     payload = json.dumps(images_b64)
 
     html = f"""
@@ -112,6 +112,23 @@ def _scroll_review_component(images_b64: list[str]) -> bool:
           color: #8a5a00;
           font-weight: 600;
         }}
+        .hidden {{
+          display: none;
+        }}
+        .unlock-btn {{
+          margin-top: 10px;
+          padding: 10px 14px;
+          border: 0;
+          border-radius: 8px;
+          background: #0f62fe;
+          color: white;
+          font-size: 14px;
+          cursor: pointer;
+        }}
+        .unlock-btn:disabled {{
+          background: #9ca3af;
+          cursor: not-allowed;
+        }}
       </style>
     </head>
     <body>
@@ -121,7 +138,8 @@ def _scroll_review_component(images_b64: list[str]) -> bool:
         </div>
         <div id="viewer" class="viewer"></div>
         <div class="footer">
-          <span id="status" class="pending">Scroll to the end of the document to continue.</span>
+          <div id="status" class="pending">Scroll to the end of the document to continue.</div>
+          <button id="unlockBtn" class="unlock-btn hidden">Unlock acknowledgement</button>
         </div>
       </div>
 
@@ -129,7 +147,8 @@ def _scroll_review_component(images_b64: list[str]) -> bool:
         const images = {payload};
         const viewer = document.getElementById("viewer");
         const statusEl = document.getElementById("status");
-        let sentTrue = false;
+        const unlockBtn = document.getElementById("unlockBtn");
+        let reachedBottom = false;
 
         images.forEach((img64, idx) => {{
           const img = document.createElement("img");
@@ -160,34 +179,32 @@ def _scroll_review_component(images_b64: list[str]) -> bool:
           const atBottom =
             viewer.scrollTop + viewer.clientHeight >= viewer.scrollHeight - threshold;
 
-          if (atBottom) {{
-            statusEl.textContent = "End of document reached.";
+          if (atBottom && !reachedBottom) {{
+            reachedBottom = true;
+            statusEl.textContent = "End of document reached. Click below to unlock acknowledgement.";
             statusEl.className = "ok";
-            if (!sentTrue) {{
-              sentTrue = true;
-              sendValue(true);
-            }}
-          }} else {{
-            statusEl.textContent = "Scroll to the end of the document to continue.";
-            statusEl.className = "pending";
+            unlockBtn.classList.remove("hidden");
           }}
         }}
 
         viewer.addEventListener("scroll", checkScroll);
 
-        window.addEventListener("load", () => {{
-          setFrameHeight(820);
-          sendValue(false);
-          checkScroll();
+        unlockBtn.addEventListener("click", () => {{
+          if (!reachedBottom) return;
+          sendValue(true);
         }});
 
-        setTimeout(() => setFrameHeight(820), 300);
+        window.addEventListener("load", () => {{
+          setFrameHeight(860);
+        }});
+
+        setTimeout(() => setFrameHeight(860), 300);
       </script>
     </body>
     </html>
     """
 
-    value = components.html(html, height=820, scrolling=False)
+    value = components.html(html, height=860, scrolling=False)
     return value is True
 
 
@@ -208,14 +225,16 @@ def _render_review_gate(pdf_bytes: bytes, pdf_name: str) -> bool:
     with st.spinner("A preparar visualização do datapackage..."):
         images_b64 = _render_pdf_pages_as_base64(pdf_bytes)
 
-    scrolled_to_end = _scroll_review_component(images_b64)
+    unlocked = _scroll_review_component(
+        images_b64,
+        component_key=f"scroll-review-{current_hash}",
+    )
 
-    if scrolled_to_end:
+    if unlocked:
         st.session_state["review_scrolled_to_end"] = True
 
     if st.session_state["review_scrolled_to_end"]:
-        st.success("End of document reached.")
-
+        st.success("Acknowledgement unlocked.")
         st.session_state["review_acknowledged"] = st.checkbox(
             "I have read the entire company provided datapackage",
             value=st.session_state["review_acknowledged"],
@@ -223,7 +242,7 @@ def _render_review_gate(pdf_bytes: bytes, pdf_name: str) -> bool:
         )
     else:
         st.session_state["review_acknowledged"] = False
-        st.warning("You must scroll to the end of the document before acknowledgement is unlocked.")
+        st.warning("You must scroll to the end of the document and unlock acknowledgement before continuing.")
 
     return bool(
         st.session_state["review_scrolled_to_end"]
